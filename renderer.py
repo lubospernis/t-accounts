@@ -1,11 +1,13 @@
 """
 renderer.py — Beautiful T-account display using Rich.
+
+Equity is always the last row on the right side, rendered in magenta
+to distinguish it as a derived/computed balancing item.
 """
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.columns import Columns
-from rich.text import Text
 from rich import box
 from ledger import Entity, Ledger
 
@@ -23,9 +25,8 @@ def render_entity(entity: Entity) -> Panel:
     table.add_column("ASSETS", style="green", justify="left")
     table.add_column("LIABILITIES & EQUITY", style="red", justify="left")
 
-    # Zip assets and liabilities side by side
     assets = entity.assets
-    liabs = entity.liabilities
+    liabs = entity.liabilities  # explicit liabilities only, no equity
     max_rows = max(len(assets), len(liabs), 1)
 
     for i in range(max_rows):
@@ -43,14 +44,19 @@ def render_entity(entity: Entity) -> Panel:
                 l_cell += f" [dim]→ {l['counterparty']}[/dim]"
         table.add_row(a_cell, l_cell)
 
+    # Equity row — always rendered in magenta as the residual balancing item
+    eq = entity.equity()
+    eq_sign = "+" if eq >= 0 else ""
+    table.add_row(
+        "",
+        f"[bold magenta]equity  {eq_sign}{eq:,.0f}[/bold magenta]  [dim magenta](= A − L)[/dim magenta]"
+    )
+
     # Totals row
     table.add_row("─" * 20, "─" * 20)
-    balanced = entity.is_balanced()
-    bal_icon = "✓" if balanced else "✗ UNBALANCED"
-    bal_style = "green" if balanced else "bold red"
     table.add_row(
         f"[bold]TOTAL  {entity.total_assets():,.0f}[/bold]",
-        f"[bold]TOTAL  {entity.total_liabilities():,.0f}[/bold]  [{bal_style}]{bal_icon}[/{bal_style}]",
+        f"[bold]TOTAL  {entity.total_liabilities_and_equity():,.0f}[/bold]  [green]✓[/green]",
     )
 
     return Panel(table, title=f"[bold yellow]{entity.name}[/bold yellow]", border_style="yellow")
@@ -70,7 +76,6 @@ def render_graph(ledger: Ledger):
         console.print("[dim]No transactions recorded yet.[/dim]")
         return
 
-    # Build adjacency: sender → {receiver: [(instrument, amount)]}
     graph: dict[str, dict] = {}
     for tx in ledger.transactions:
         s, r = tx["sender"], tx["receiver"]
@@ -88,10 +93,10 @@ def render_graph(ledger: Ledger):
             seen_nodes.add(sender)
             seen_nodes.add(receiver)
             for instrument, amount, tx_type in flows:
-                arrow = f"[cyan]{sender}[/cyan] [dim]──[{instrument} {amount:,.0f}]──▶[/dim] [cyan]{receiver}[/cyan]"
-                lines.append(arrow)
+                lines.append(
+                    f"[cyan]{sender}[/cyan] [dim]──[{instrument} {amount:,.0f}]──▶[/dim] [cyan]{receiver}[/cyan]"
+                )
 
-    # Also show entities with no transactions
     lonely = set(ledger.entities.keys()) - seen_nodes
     if lonely:
         lines.append("")

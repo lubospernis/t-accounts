@@ -1,6 +1,9 @@
 """
 markdown_export.py — Export current ledger state to Markdown.
 Designed to fit a git-based workflow: commit after each scenario step.
+
+Equity is shown as a derived row marked with (= A - L) to distinguish
+it from explicit liabilities.
 """
 from pathlib import Path
 from datetime import datetime
@@ -15,7 +18,7 @@ def entity_to_md(entity: Entity) -> str:
     lines.append("|--------|----------------------|")
 
     assets = entity.assets
-    liabs = entity.liabilities
+    liabs = entity.liabilities  # explicit liabilities only
     max_rows = max(len(assets), len(liabs), 1)
 
     for i in range(max_rows):
@@ -31,10 +34,16 @@ def entity_to_md(entity: Entity) -> str:
             l_cell = f"{l['label']} {l['amount']:,.0f}{suffix}"
         lines.append(f"| {a_cell} | {l_cell} |")
 
+    # Equity row — derived, marked distinctly
+    eq = entity.equity()
+    eq_sign = "+" if eq >= 0 else ""
+    lines.append(f"|  | ***equity {eq_sign}{eq:,.0f}*** *(= A − L)* |")
+
     # Totals
-    balanced = entity.is_balanced()
-    bal_note = "✓" if balanced else "⚠️ UNBALANCED"
-    lines.append(f"| **TOTAL {entity.total_assets():,.0f}** | **TOTAL {entity.total_liabilities():,.0f}** {bal_note} |")
+    lines.append(
+        f"| **TOTAL {entity.total_assets():,.0f}** "
+        f"| **TOTAL {entity.total_liabilities_and_equity():,.0f}** ✓ |"
+    )
     return "\n".join(lines)
 
 
@@ -43,7 +52,6 @@ def graph_to_md(ledger: Ledger) -> str:
         return "_No transactions yet._"
 
     lines = ["```"]
-    seen = set()
     graph: dict[str, dict] = {}
     for tx in ledger.transactions:
         s, r = tx["sender"], tx["receiver"]

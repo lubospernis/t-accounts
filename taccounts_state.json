@@ -1,22 +1,35 @@
 {
   "entities": {
-    "stablecoin-issuer": {
-      "name": "stablecoin-issuer",
+    "alice": {
+      "name": "alice",
       "assets": [
         {
           "label": "cash",
-          "amount": 10.0,
+          "amount": 15.0,
           "counterparty": null
         }
       ],
-      "liabilities": [
+      "liabilities": []
+    },
+    "bob": {
+      "name": "bob",
+      "assets": [
         {
-          "label": "equity",
-          "amount": 10.0,
+          "label": "cash",
+          "amount": 5.0,
           "counterparty": null
         }
-      ]
+      ],
+      "liabilities": []
     }
   },
-  "transactions": []
+  "transactions": [
+    {
+      "sender": "bob",
+      "receiver": "alice",
+      "instrument": "cash",
+      "amount": 5.0,
+      "type": "payment"
+    }
+  ]
 }
