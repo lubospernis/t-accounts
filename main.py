@@ -3,15 +3,17 @@ main.py — taccounts CLI
 A T-account simulator for teaching monetary economics.
 
 Commands:
-  create <entity> <reserves>              — Create an entity with initial reserves
-  issue <entity> <token> <amount>         — Issue a liability token (e.g. stablecoin)
-  pay <sender> <receiver> <instrument> <amount>  — Record a payment between entities
-  deposit <entity> <asset> <amount> [--from <counterparty>]  — Add asset
-  borrow <entity> <amount> [--from <lender>]    — Borrow from counterparty
-  balancesheets show                      — Display all T-accounts
-  balancesheets export                    — Export to Markdown
-  graph show                              — Show payment flow graph
-  reset                                   — Clear all state
+  new <entity>                                        — Create a blank balance sheet
+  entry <entity> asset|liability <label> <amount>     — Add any asset or liability freely
+  create <entity> <reserves>                          — Create entity with initial reserves
+  issue <entity> <token> <amount>                     — Issue a liability token (e.g. stablecoin)
+  pay <sender> <receiver> <instrument> <amount>       — Record a payment between entities
+  deposit <entity> <asset> <amount> [--from <cp>]     — Add asset deposit
+  borrow <entity> <amount> [--from <lender>]          — Borrow cash
+  balancesheets show                                  — Display all T-accounts
+  balancesheets export                                — Export to Markdown
+  graph show                                          — Show payment flow graph
+  reset                                               — Clear all state
 """
 
 import typer
@@ -50,6 +52,84 @@ def create(
     except ValueError as ex:
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
+
+
+# ── NEW (blank balance sheet) ────────────────────────────────────────────────
+
+@app.command()
+def new(
+    entity: str = typer.Argument(..., help="Entity name, e.g. 'my-bank'"),
+):
+    """Create a blank balance sheet with no initial entries."""
+    try:
+        from ledger import Entity
+        if entity in ledger.entities:
+            raise ValueError(f"Entity '{entity}' already exists.")
+        ledger.entities[entity] = Entity(name=entity)
+        ledger.save()
+        console.print(f"[green]✓[/green] Created blank balance sheet: [bold yellow]{entity}[/bold yellow]")
+        console.print(f"[dim]Use: entry {entity} asset|liability <label> <amount>[/dim]")
+    except ValueError as ex:
+        console.print(f"[red]Error:[/red] {ex}")
+        raise typer.Exit(1)
+
+
+# ── ENTRY (generic asset or liability) ───────────────────────────────────────
+
+@app.command()
+def entry(
+    entity: str = typer.Argument(..., help="Entity name"),
+    side: str = typer.Argument(..., help="'asset' or 'liability'"),
+    label: str = typer.Argument(..., help="Label, e.g. 'cash', 'bonds', 'deposits'"),
+    amount: float = typer.Argument(..., help="Amount"),
+    counterparty: Optional[str] = typer.Option(None, "--cp", help="Counterparty name (optional)"),
+    show: bool = typer.Option(True, "--show/--no-show", help="Print T-account after entry"),
+    export_md: bool = typer.Option(False, "--export", help="Also export to balancesheets.md"),
+):
+    """
+    Freely add an asset or liability to any balance sheet.
+
+    Examples:\n
+      entry my-bank asset cash 100\n
+      entry my-bank liability deposits 80\n
+      entry my-bank asset bonds 50 --cp ecb\n
+      entry my-bank liability equity 20 --export
+    """
+    side = side.lower()
+    if side not in ("asset", "liability"):
+        console.print("[red]Error:[/red] side must be 'asset' or 'liability'")
+        raise typer.Exit(1)
+
+    # Auto-create entity if it doesn't exist yet
+    if entity not in ledger.entities:
+        from ledger import Entity
+        ledger.entities[entity] = Entity(name=entity)
+        console.print(f"[dim]Auto-created balance sheet '{entity}'[/dim]")
+
+    e = ledger.entities[entity]
+
+    if side == "asset":
+        e.add_asset(label, amount, counterparty=counterparty)
+        side_label = "[green]ASSET[/green]"
+    else:
+        e.add_liability(label, amount, counterparty=counterparty)
+        side_label = "[red]LIABILITY[/red]"
+
+    ledger.save()
+
+    cp_note = f" [dim](cp: {counterparty})[/dim]" if counterparty else ""
+    console.print(
+        f"[green]✓[/green] {side_label} [cyan]{label}[/cyan] [bold]{amount:,.0f}[/bold]"
+        f" added to [bold yellow]{entity}[/bold yellow]{cp_note}"
+    )
+
+    if show:
+        from renderer import render_entity
+        console.print(render_entity(e))
+
+    if export_md:
+        path = export(ledger, append=True)
+        console.print(f"[green]✓[/green] Exported to [bold]{path}[/bold]")
 
 
 # ── ISSUE ───────────────────────────────────────────────────────────────────
