@@ -1,0 +1,22 @@
+{
+  "entities": {
+    "stablecoin-issuer": {
+      "name": "stablecoin-issuer",
+      "assets": [
+        {
+          "label": "cash",
+          "amount": 10.0,
+          "counterparty": null
+        }
+      ],
+      "liabilities": [
+        {
+          "label": "equity",
+          "amount": 10.0,
+          "counterparty": null
+        }
+      ]
+    }
+  },
+  "transactions": []
+}
