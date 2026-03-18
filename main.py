@@ -2,14 +2,18 @@
 main.py — taccounts CLI
 A T-account simulator for teaching monetary economics.
 
+All cash movements go through ledger.transfer_cash(), which validates,
+updates both balance sheets, and records the transaction in the graph.
+
 Commands:
   new <entity>                                        — Create a blank balance sheet
   entry <entity> asset|liability <label> <amount>     — Add any asset or liability freely
   create <entity> <reserves>                          — Create entity with initial reserves
   issue <entity> <token> <amount>                     — Issue a liability token (e.g. stablecoin)
-  pay <sender> <receiver> <instrument> <amount>       — Record a payment between entities
-  deposit <entity> <asset> <amount> [--from <cp>]     — Add asset deposit
-  borrow <entity> <amount> [--from <lender>]          — Borrow cash
+  pay <sender> <receiver> <amount>                    — Cash payment (updates graph)
+  deposit <bank> <amount> --from <depositor>          — Deposit cash into a bank
+  withdraw <bank> <amount> --to <withdrawer>          — Withdraw cash from a bank
+  borrow <entity> <amount> --from <lender>            — Borrow (bank: deposit created; direct: cash moves)
   balancesheets show                                  — Display all T-accounts
   balancesheets export                                — Export to Markdown
   graph show                                          — Show payment flow graph
@@ -18,9 +22,8 @@ Commands:
 
 import typer
 from typing import Optional
-from rich.console import Console
 from ledger import Ledger
-from renderer import render_all, render_graph, console
+from renderer import render_all, render_graph, render_entity, console
 from markdown_export import export
 
 app = typer.Typer(
@@ -36,25 +39,24 @@ app.add_typer(graph_app, name="graph")
 ledger = Ledger()
 
 
-# ── CREATE ──────────────────────────────────────────────────────────────────
+# ── CREATE ───────────────────────────────────────────────────────────────────
 
 @app.command()
 def create(
     entity: str = typer.Argument(..., help="Entity name, e.g. 'stablecoin-issuer'"),
     reserves: float = typer.Argument(..., help="Initial cash/reserves"),
 ):
-    """Create an entity with initial reserves (cash asset = equity liability)."""
+    """Create an entity with initial reserves (cash asset, equity is residual)."""
     try:
         e = ledger.create(entity, reserves)
         console.print(f"[green]✓[/green] Created [bold yellow]{entity}[/bold yellow] with [bold]{reserves:,.0f}[/bold] reserves")
-        from renderer import render_entity
         console.print(render_entity(e))
     except ValueError as ex:
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
 
 
-# ── NEW (blank balance sheet) ────────────────────────────────────────────────
+# ── NEW ──────────────────────────────────────────────────────────────────────
 
 @app.command()
 def new(
@@ -74,7 +76,7 @@ def new(
         raise typer.Exit(1)
 
 
-# ── ENTRY (generic asset or liability) ───────────────────────────────────────
+# ── ENTRY ────────────────────────────────────────────────────────────────────
 
 @app.command()
 def entry(
@@ -100,7 +102,6 @@ def entry(
         console.print("[red]Error:[/red] side must be 'asset' or 'liability'")
         raise typer.Exit(1)
 
-    # Auto-create entity if it doesn't exist yet
     if entity not in ledger.entities:
         from ledger import Entity
         ledger.entities[entity] = Entity(name=entity)
@@ -124,7 +125,6 @@ def entry(
     )
 
     if show:
-        from renderer import render_entity
         console.print(render_entity(e))
 
     if export_md:
@@ -132,7 +132,7 @@ def entry(
         console.print(f"[green]✓[/green] Exported to [bold]{path}[/bold]")
 
 
-# ── ISSUE ───────────────────────────────────────────────────────────────────
+# ── ISSUE ────────────────────────────────────────────────────────────────────
 
 @app.command()
 def issue(
@@ -143,8 +143,7 @@ def issue(
 ):
     """
     Issue a token/liability. Adds a liability on the issuer.
-    If --to is given, also adds the token as an asset to the receiver
-    and removes cash from issuer (settlement).
+    If --to is given, the receiver gets the token as an asset.
     """
     try:
         issuer = ledger.get(entity)
@@ -152,12 +151,9 @@ def issue(
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
 
-    # Issuer: token issued → new liability
     issuer.add_liability(token, amount, counterparty=to)
 
     if to:
-        # Issuer pays out cash (or we can model as direct token credit)
-        # Model: issuer's cash backs the token; receiver gets the token as asset
         try:
             receiver = ledger.get(to)
         except ValueError as ex:
@@ -170,21 +166,34 @@ def issue(
         console.print(f"[green]✓[/green] [bold yellow]{entity}[/bold yellow] issued [bold]{amount:,.0f}[/bold] [cyan]{token}[/cyan] (outstanding)")
 
     ledger.save()
-    from renderer import render_entity
     console.print(render_entity(issuer))
 
 
-# ── PAY ─────────────────────────────────────────────────────────────────────
+# ── PAY ──────────────────────────────────────────────────────────────────────
 
 @app.command()
 def pay(
     sender: str = typer.Argument(..., help="Sending entity"),
     receiver: str = typer.Argument(..., help="Receiving entity"),
-    amount: float = typer.Argument(..., help="Amount of cash to transfer"),
+    amount: float = typer.Argument(..., help="Amount to transfer"),
 ):
     """
-    Cash payment between two entities. Both must have a cash asset entry;
-    sender must have sufficient cash. Updates both balance sheets.
+    Payment between two entities. Two cases:
+
+    INTRABANK — both hold deposits at the same institution:
+      Sender:   deposit@bank ↓
+      Receiver: deposit@bank ↑
+      Bank:     deposit-sender ↓, deposit-receiver ↑
+      (no cash moves, not recorded in payment graph)
+
+    CASH — sender holds cash directly:
+      Sender:   cash ↓
+      Receiver: cash ↑
+      (recorded in payment graph)
+
+    Intrabank is detected automatically. If both share a deposit institution
+    and sender has enough there, it settles intrabank. Otherwise falls back
+    to a direct cash payment.
 
     Example: pay alice bob 30
     """
@@ -195,55 +204,78 @@ def pay(
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
 
-    # Check sender has a cash asset
-    sender_cash = next((e for e in s.assets if e["label"] == "cash"), None)
-    if sender_cash is None:
-        console.print(
-            f"[red]Error:[/red] [bold yellow]{sender}[/bold yellow] has no cash asset. "
-            f"Only cash payments are supported."
-        )
-        raise typer.Exit(1)
+    # Detect shared deposit institution
+    sender_deposits = {
+        e["label"].removeprefix("deposit@"): e
+        for e in s.assets if e["label"].startswith("deposit@")
+    }
+    receiver_deposits = {
+        e["label"].removeprefix("deposit@"): e
+        for e in r.assets if e["label"].startswith("deposit@")
+    }
+    shared = set(sender_deposits) & set(receiver_deposits)
 
-    # Check receiver has a cash asset (or at least exists — we'll create the entry)
-    receiver_cash = next((e for e in r.assets if e["label"] == "cash"), None)
-    if receiver_cash is None:
-        console.print(
-            f"[red]Error:[/red] [bold yellow]{receiver}[/bold yellow] has no cash asset. "
-            f"Add one first with: entry {receiver} asset cash <amount>"
-        )
-        raise typer.Exit(1)
-
-    # Check sender has sufficient cash
-    if sender_cash["amount"] < amount:
-        console.print(
-            f"[red]Error:[/red] [bold yellow]{sender}[/bold yellow] has insufficient cash: "
-            f"[bold]{sender_cash['amount']:,.0f}[/bold] available, "
-            f"[bold]{amount:,.0f}[/bold] requested."
-        )
-        raise typer.Exit(1)
-
-    # --- Execute the cash transfer ---
-    # Sender: cash asset decreases
-    sender_cash["amount"] -= amount
-    if sender_cash["amount"] == 0:
-        s.assets.remove(sender_cash)
-
-    # Receiver: cash asset increases
-    receiver_cash["amount"] += amount
-
-    ledger.record_transaction(sender, receiver, "cash", amount, "payment")
-    ledger.save()
-
-    from renderer import render_entity
-    console.print(
-        f"[green]✓[/green] [bold yellow]{sender}[/bold yellow] paid "
-        f"[bold]{amount:,.0f}[/bold] cash → [bold yellow]{receiver}[/bold yellow]"
+    # Pick the first shared bank where sender has enough
+    intrabank = next(
+        (bank for bank in shared if sender_deposits[bank]["amount"] >= amount),
+        None
     )
-    console.print(render_entity(s))
-    console.print(render_entity(r))
+
+    if intrabank:
+        # ── Intrabank settlement — no cash moves, not in graph ────────────────
+        try:
+            bank_entity = ledger.get(intrabank)
+        except ValueError as ex:
+            console.print(f"[red]Error:[/red] {ex}")
+            raise typer.Exit(1)
+
+        # Sender: deposit claim shrinks
+        sd = sender_deposits[intrabank]
+        sd["amount"] -= amount
+        if sd["amount"] == 0:
+            s.assets.remove(sd)
+
+        # Receiver: deposit claim grows
+        receiver_deposits[intrabank]["amount"] += amount
+
+        # Bank: rebalance deposit liabilities
+        dep_sender = next((e for e in bank_entity.liabilities if e["label"] == f"deposit-{sender}"), None)
+        dep_receiver = next((e for e in bank_entity.liabilities if e["label"] == f"deposit-{receiver}"), None)
+        if dep_sender:
+            dep_sender["amount"] -= amount
+            if dep_sender["amount"] == 0:
+                bank_entity.liabilities.remove(dep_sender)
+        if dep_receiver:
+            dep_receiver["amount"] += amount
+
+        ledger.save()
+
+        console.print(
+            f"[green]✓[/green] [bold yellow]{sender}[/bold yellow] paid "
+            f"[bold]{amount:,.0f}[/bold] → [bold yellow]{receiver}[/bold yellow] "
+            f"[dim](settled at {intrabank}, no cash moved)[/dim]"
+        )
+        console.print(render_entity(s))
+        console.print(render_entity(r))
+        console.print(render_entity(bank_entity))
+
+    else:
+        # ── Cash payment — recorded in graph ─────────────────────────────────
+        try:
+            ledger.transfer_cash(sender, receiver, amount, tx_type="payment")
+        except ValueError as ex:
+            console.print(f"[red]Error:[/red] {ex}")
+            raise typer.Exit(1)
+
+        console.print(
+            f"[green]✓[/green] [bold yellow]{sender}[/bold yellow] paid "
+            f"[bold]{amount:,.0f}[/bold] cash → [bold yellow]{receiver}[/bold yellow]"
+        )
+        console.print(render_entity(ledger.get(sender)))
+        console.print(render_entity(ledger.get(receiver)))
 
 
-# ── DEPOSIT ─────────────────────────────────────────────────────────────────
+# ── DEPOSIT ──────────────────────────────────────────────────────────────────
 
 @app.command()
 def deposit(
@@ -254,59 +286,56 @@ def deposit(
     """
     Deposit cash from a depositor into a bank. Models both sides:
 
-      Depositor: cash asset ↓, deposit-claim asset ↑ (net zero, equity unchanged)
-      Bank:      cash asset ↑, deposit liability ↑   (net zero, equity unchanged)
+      Depositor: cash ↓, deposit@bank asset ↑  (equity unchanged)
+      Bank:      cash ↑, deposit-<name> liability ↑  (equity unchanged)
 
-    Both entities must already exist. Depositor must have enough cash.
+    Cash movement goes through transfer_cash and is recorded in the graph.
 
     Example: deposit bank 10 --from alice
     """
-    try:
-        b = ledger.get(bank)
-    except ValueError as ex:
-        console.print(f"[red]Error:[/red] {ex}")
-        raise typer.Exit(1)
-
     if not from_:
         console.print("[red]Error:[/red] --from <depositor> is required.")
         raise typer.Exit(1)
 
     try:
+        b = ledger.get(bank)
         depositor = ledger.get(from_)
     except ValueError as ex:
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
 
-    # Validate depositor has enough cash
-    dep_cash = next((e for e in depositor.assets if e["label"] == "cash"), None)
-    if dep_cash is None:
-        console.print(f"[red]Error:[/red] [bold yellow]{from_}[/bold yellow] has no cash asset.")
-        raise typer.Exit(1)
-    if dep_cash["amount"] < amount:
-        console.print(
-            f"[red]Error:[/red] [bold yellow]{from_}[/bold yellow] has insufficient cash: "
-            f"[bold]{dep_cash['amount']:,.0f}[/bold] available, [bold]{amount:,.0f}[/bold] requested."
-        )
+    # Cash moves from depositor to bank (validates + records in graph)
+    try:
+        ledger.transfer_cash(from_, bank, amount, tx_type="deposit")
+    except ValueError as ex:
+        console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
 
-    # ── Depositor side ───────────────────────────────────────────────────────
-    # Cash goes out
-    dep_cash["amount"] -= amount
-    if dep_cash["amount"] == 0:
-        depositor.assets.remove(dep_cash)
-    # Deposit claim comes in (asset: money owed back by bank)
+    # Swap depositor's cash entry for a deposit claim
+    dep_cash = next((e for e in depositor.assets if e["label"] == "cash"), None)
+    # transfer_cash already moved the cash to the bank — now adjust depositor's asset side:
+    # cash was reduced by transfer_cash; add deposit claim in its place
     depositor.add_asset(f"deposit@{bank}", amount, counterparty=bank)
 
-    # ── Bank side ────────────────────────────────────────────────────────────
-    # Cash comes in
-    b.add_asset("cash", amount, counterparty=from_)
-    # Deposit liability goes out (owes the depositor)
+    # Bank already gained cash via transfer_cash; add the matching deposit liability
     b.add_liability(f"deposit-{from_}", amount, counterparty=from_)
 
-    ledger.record_transaction(from_, bank, "cash", amount, "deposit")
+    # But transfer_cash also added cash to the bank's asset — we need to undo the
+    # intermediate step where transfer_cash gave the receiver raw cash, since
+    # the bank's cash asset is already correct from transfer_cash.
+    # The depositor's cash was already reduced. Now remove the plain cash the
+    # transfer_cash added to the bank (it's correct) but we need to also
+    # remove the cash that transfer_cash added to the depositor's side... 
+    # Actually: transfer_cash(from_, bank) already:
+    #   - reduced depositor cash by amount  ✓
+    #   - increased bank cash by amount     ✓
+    # We just need the extra accounting entries on top:
+    #   - depositor gains deposit@bank      ✓ (done above)
+    #   - bank gains deposit liability      ✓ (done above)
+    # But transfer_cash already called record_transaction, so graph is updated. Good.
+
     ledger.save()
 
-    from renderer import render_entity
     console.print(
         f"[green]✓[/green] [bold yellow]{from_}[/bold yellow] deposited "
         f"[bold]{amount:,.0f}[/bold] cash into [bold yellow]{bank}[/bold yellow]"
@@ -315,39 +344,130 @@ def deposit(
     console.print(render_entity(b))
 
 
-# ── BORROW ──────────────────────────────────────────────────────────────────
+# ── WITHDRAW ─────────────────────────────────────────────────────────────────
 
 @app.command()
-def borrow(
-    entity: str = typer.Argument(...),
+def withdraw(
+    bank: str = typer.Argument(..., help="The bank being withdrawn from"),
     amount: float = typer.Argument(...),
-    from_: Optional[str] = typer.Option(None, "--from", help="Lender entity"),
+    to: str = typer.Option(..., "--to", help="Withdrawing entity"),
 ):
-    """Entity borrows cash: gains cash asset, gains loan liability."""
+    """
+    Withdraw cash from a bank. Exact mirror of deposit:
+
+      Withdrawer: deposit@bank asset ↓, cash ↑  (equity unchanged)
+      Bank:       cash ↓, deposit liability ↓    (equity unchanged)
+
+    Cash movement goes through transfer_cash and is recorded in the graph.
+
+    Example: withdraw bank 10 --to alice
+    """
     try:
-        borrower = ledger.get(entity)
+        b = ledger.get(bank)
+        withdrawer = ledger.get(to)
     except ValueError as ex:
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
 
-    borrower.add_asset("cash", amount, counterparty=from_)
-    borrower.add_liability("loan-payable", amount, counterparty=from_)
+    # Validate deposit claim
+    claim_label = f"deposit@{bank}"
+    claim = next((e for e in withdrawer.assets if e["label"] == claim_label), None)
+    if claim is None:
+        console.print(
+            f"[red]Error:[/red] [bold yellow]{to}[/bold yellow] has no deposit claim at "
+            f"[bold yellow]{bank}[/bold yellow]. Did they deposit first?"
+        )
+        raise typer.Exit(1)
+    if claim["amount"] < amount:
+        console.print(
+            f"[red]Error:[/red] [bold yellow]{to}[/bold yellow] only has "
+            f"[bold]{claim['amount']:,.0f}[/bold] deposited at [bold yellow]{bank}[/bold yellow], "
+            f"cannot withdraw [bold]{amount:,.0f}[/bold]."
+        )
+        raise typer.Exit(1)
 
-    if from_:
-        try:
-            lender = ledger.get(from_)
-            lender.remove_asset("cash", amount)
-            lender.add_asset("loan-receivable", amount, counterparty=entity)
-        except ValueError:
-            pass  # lender not in ledger, that's OK
-        ledger.record_transaction(from_, entity, "loan", amount, "borrow")
+    # Cash moves from bank to withdrawer (validates bank cash + records in graph)
+    try:
+        ledger.transfer_cash(bank, to, amount, tx_type="withdrawal")
+    except ValueError as ex:
+        console.print(f"[red]Error:[/red] {ex}")
+        raise typer.Exit(1)
+
+    # Reduce the deposit claim on the withdrawer side
+    claim["amount"] -= amount
+    if claim["amount"] == 0:
+        withdrawer.assets.remove(claim)
+
+    # Reduce the deposit liability on the bank side
+    dep_label = f"deposit-{to}"
+    dep_liab = next((e for e in b.liabilities if e["label"] == dep_label), None)
+    if dep_liab:
+        dep_liab["amount"] -= amount
+        if dep_liab["amount"] == 0:
+            b.liabilities.remove(dep_liab)
 
     ledger.save()
-    console.print(f"[green]✓[/green] [bold yellow]{entity}[/bold yellow] borrowed [bold]{amount:,.0f}[/bold]" +
-                  (f" from [bold yellow]{from_}[/bold yellow]" if from_ else ""))
+
+    console.print(
+        f"[green]✓[/green] [bold yellow]{to}[/bold yellow] withdrew "
+        f"[bold]{amount:,.0f}[/bold] cash from [bold yellow]{bank}[/bold yellow]"
+    )
+    console.print(render_entity(withdrawer))
+    console.print(render_entity(b))
 
 
-# ── BALANCESHEETS ────────────────────────────────────────────────────────────
+# ── BORROW ───────────────────────────────────────────────────────────────────
+
+@app.command()
+def borrow(
+    entity: str = typer.Argument(..., help="The borrowing entity"),
+    amount: float = typer.Argument(...),
+    from_: str = typer.Option(..., "--from", help="Lending entity"),
+):
+    """
+    Create a loan between borrower and lender. No cash moves.
+
+    Both sides get updated:
+      Borrower: deposit@lender ↑, loan-payable ↑
+      Lender:   loan-receivable ↑, deposit-<borrower> ↑
+
+    This applies to all lenders — banks and non-banks alike. Cash is only
+    released when the borrower calls 'withdraw'. This models the credit
+    creation step separately from the cash settlement step.
+
+    Examples:
+      borrow startup 50 --from bank
+      borrow startup 50 --from investor
+      # then: withdraw bank 50 --to startup  (or: withdraw investor 50 --to startup)
+    """
+    try:
+        borrower = ledger.get(entity)
+        lender = ledger.get(from_)
+    except ValueError as ex:
+        console.print(f"[red]Error:[/red] {ex}")
+        raise typer.Exit(1)
+
+    # Borrow always creates the credit relationship only — no cash moves.
+    # The borrower gets a deposit@lender claim; the lender records a deposit liability.
+    # Cash is only released when the borrower calls withdraw.
+    borrower.add_asset(f"deposit@{from_}", amount, counterparty=from_)
+    borrower.add_liability("loan-payable", amount, counterparty=from_)
+    lender.add_asset("loan-receivable", amount, counterparty=entity)
+    lender.add_liability(f"deposit-{entity}", amount, counterparty=entity)
+
+    ledger.save()
+
+    console.print(
+        f"[green]✓[/green] [bold yellow]{from_}[/bold yellow] lent "
+        f"[bold]{amount:,.0f}[/bold] to [bold yellow]{entity}[/bold yellow] "
+        f"[dim]— deposit created, no cash moved. Use 'withdraw {from_} {amount} --to {entity}' to draw cash.[/dim]"
+    )
+
+    console.print(render_entity(borrower))
+    console.print(render_entity(lender))
+
+
+# ── BALANCESHEETS ─────────────────────────────────────────────────────────────
 
 @balancesheets_app.command("show")
 def balancesheets_show():
@@ -364,7 +484,7 @@ def balancesheets_export(
     console.print(f"[green]✓[/green] Exported to [bold]{path}[/bold]")
 
 
-# ── GRAPH ────────────────────────────────────────────────────────────────────
+# ── GRAPH ─────────────────────────────────────────────────────────────────────
 
 @graph_app.command("show")
 def graph_show():
@@ -372,7 +492,7 @@ def graph_show():
     render_graph(ledger)
 
 
-# ── RESET ────────────────────────────────────────────────────────────────────
+# ── RESET ─────────────────────────────────────────────────────────────────────
 
 @app.command()
 def reset(
@@ -386,7 +506,7 @@ def reset(
     console.print("[red]✓ Reset complete.[/red]")
 
 
-# ── ENTRY POINT ──────────────────────────────────────────────────────────────
+# ── ENTRY POINT ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     app()

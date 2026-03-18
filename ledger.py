@@ -5,11 +5,8 @@ Accounting identity enforced here:
     Assets = Liabilities + Equity
     => Equity = Assets - Liabilities  (derived, never stored as a liability)
 
-Equity is computed on the fly from the balance sheet. It is displayed
-separately in the renderer and exported to markdown, but never stored
-in the liabilities list. Any "equity" entry that was manually added is
-treated as a regular liability (e.g. paid-in capital) — only the
-auto-computed residual equity is the balancing item.
+All cash movements go through transfer_cash(), which validates balances
+and records the transaction in the graph regardless of which command triggered it.
 """
 import json
 from pathlib import Path
@@ -25,14 +22,20 @@ class Entity:
     assets: list = field(default_factory=list)
     liabilities: list = field(default_factory=list)  # excludes residual equity
 
+    # Labels that always aggregate regardless of counterparty
+    FUNGIBLE = {"cash"}
+
     # ── asset helpers ────────────────────────────────────────────────────────
 
     def add_asset(self, label: str, amount: float, counterparty=None):
         for e in self.assets:
-            if e["label"] == label and e.get("counterparty") == counterparty:
+            if e["label"] == label and (
+                label in self.FUNGIBLE or e.get("counterparty") == counterparty
+            ):
                 e["amount"] += amount
                 return
-        self.assets.append({"label": label, "amount": amount, "counterparty": counterparty})
+        cp = None if label in self.FUNGIBLE else counterparty
+        self.assets.append({"label": label, "amount": amount, "counterparty": cp})
 
     def remove_asset(self, label: str, amount: float) -> bool:
         for e in self.assets:
@@ -51,8 +54,7 @@ class Entity:
 
     def add_liability(self, label: str, amount: float, counterparty=None):
         if label == "equity":
-            # Equity is computed — silently ignore any attempt to store it
-            return
+            return  # equity is computed, never stored
         for e in self.liabilities:
             if e["label"] == label and e.get("counterparty") == counterparty:
                 e["amount"] += amount
@@ -74,19 +76,16 @@ class Entity:
         return sum(e["amount"] for e in self.assets)
 
     def total_explicit_liabilities(self) -> float:
-        """Sum of all liabilities excluding residual equity."""
         return sum(e["amount"] for e in self.liabilities)
 
     def equity(self) -> float:
-        """Residual equity: Assets - Liabilities. Always balances the sheet."""
         return self.total_assets() - self.total_explicit_liabilities()
 
     def total_liabilities_and_equity(self) -> float:
         return self.total_explicit_liabilities() + self.equity()
 
     def is_balanced(self) -> bool:
-        """Always true by construction — equity is the residual."""
-        return True
+        return True  # always true by construction
 
 
 class Ledger:
@@ -110,7 +109,6 @@ class Ledger:
             data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
             for name, ed in data.get("entities", {}).items():
                 ent = Entity(name=ed["name"])
-                # Strip any stored "equity" entries from old state files
                 ent.assets = ed["assets"]
                 ent.liabilities = [l for l in ed["liabilities"] if l["label"] != "equity"]
                 self.entities[name] = ent
@@ -122,7 +120,6 @@ class Ledger:
         e = Entity(name=name)
         if reserves > 0:
             e.add_asset("cash", reserves)
-        # No explicit equity entry — it's computed as assets - liabilities
         self.entities[name] = e
         self.save()
         return e
@@ -140,6 +137,34 @@ class Ledger:
             "amount": amount,
             "type": tx_type,
         })
+        self.save()
+
+    def transfer_cash(self, sender: str, receiver: str, amount: float, tx_type: str = "payment"):
+        """
+        The single authoritative cash transfer function.
+        Validates both sides, moves cash, and records the transaction.
+        Raises ValueError with a descriptive message on any validation failure.
+        """
+        s = self.get(sender)
+        r = self.get(receiver)
+
+        sender_cash = next((e for e in s.assets if e["label"] == "cash"), None)
+        if sender_cash is None:
+            raise ValueError(f"'{sender}' has no cash asset.")
+        if sender_cash["amount"] < amount:
+            raise ValueError(
+                f"'{sender}' has insufficient cash: "
+                f"{sender_cash['amount']:,.0f} available, {amount:,.0f} requested."
+            )
+
+        # Receiver gets cash whether or not they had it before
+        sender_cash["amount"] -= amount
+        if sender_cash["amount"] == 0:
+            s.assets.remove(sender_cash)
+
+        r.add_asset("cash", amount)
+
+        self.record_transaction(sender, receiver, "cash", amount, tx_type)
         self.save()
 
     def reset(self):

@@ -1,0 +1,57 @@
+{
+  "entities": {
+    "bank": {
+      "name": "bank",
+      "assets": [
+        {
+          "label": "cash",
+          "amount": 110.0,
+          "counterparty": null
+        },
+        {
+          "label": "loan-receivable",
+          "amount": 110.0,
+          "counterparty": "bob"
+        }
+      ],
+      "liabilities": [
+        {
+          "label": "deposit-alice",
+          "amount": 120.0,
+          "counterparty": "alice"
+        }
+      ]
+    },
+    "alice": {
+      "name": "alice",
+      "assets": [
+        {
+          "label": "deposit@bank",
+          "amount": 120.0,
+          "counterparty": "bank"
+        }
+      ],
+      "liabilities": []
+    },
+    "bob": {
+      "name": "bob",
+      "assets": [],
+      "liabilities": [
+        {
+          "label": "loan-payable",
+          "amount": 110.0,
+          "counterparty": "bank"
+        }
+      ]
+    }
+  },
+  "transactions": [
+    {
+      "sender": "alice",
+      "receiver": "bank",
+      "instrument": "cash",
+      "amount": 10.0,
+      "type": "deposit"
+    }
+  ]
+}
