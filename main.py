@@ -180,12 +180,13 @@ def issue(
 def pay(
     sender: str = typer.Argument(..., help="Sending entity"),
     receiver: str = typer.Argument(..., help="Receiving entity"),
-    instrument: str = typer.Argument(..., help="Payment instrument, e.g. 'cash', 'tokenusd'"),
-    amount: float = typer.Argument(..., help="Amount"),
+    amount: float = typer.Argument(..., help="Amount of cash to transfer"),
 ):
     """
-    Record a payment: sender loses an asset, receiver gains it.
-    Example: pay alice bob tokenusd 5
+    Cash payment between two entities. Both must have a cash asset entry;
+    sender must have sufficient cash. Updates both balance sheets.
+
+    Example: pay alice bob 30
     """
     try:
         s = ledger.get(sender)
@@ -194,19 +195,52 @@ def pay(
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
 
-    # Remove from sender assets
-    removed = s.remove_asset(instrument, amount)
-    if not removed:
-        console.print(f"[red]Error:[/red] {sender} has no '{instrument}' asset to send.")
+    # Check sender has a cash asset
+    sender_cash = next((e for e in s.assets if e["label"] == "cash"), None)
+    if sender_cash is None:
+        console.print(
+            f"[red]Error:[/red] [bold yellow]{sender}[/bold yellow] has no cash asset. "
+            f"Only cash payments are supported."
+        )
         raise typer.Exit(1)
 
-    # Add to receiver assets
-    r.add_asset(instrument, amount, counterparty=sender)
+    # Check receiver has a cash asset (or at least exists — we'll create the entry)
+    receiver_cash = next((e for e in r.assets if e["label"] == "cash"), None)
+    if receiver_cash is None:
+        console.print(
+            f"[red]Error:[/red] [bold yellow]{receiver}[/bold yellow] has no cash asset. "
+            f"Add one first with: entry {receiver} asset cash <amount>"
+        )
+        raise typer.Exit(1)
 
-    ledger.record_transaction(sender, receiver, instrument, amount, "payment")
+    # Check sender has sufficient cash
+    if sender_cash["amount"] < amount:
+        console.print(
+            f"[red]Error:[/red] [bold yellow]{sender}[/bold yellow] has insufficient cash: "
+            f"[bold]{sender_cash['amount']:,.0f}[/bold] available, "
+            f"[bold]{amount:,.0f}[/bold] requested."
+        )
+        raise typer.Exit(1)
+
+    # --- Execute the cash transfer ---
+    # Sender: cash asset decreases
+    sender_cash["amount"] -= amount
+    if sender_cash["amount"] == 0:
+        s.assets.remove(sender_cash)
+
+    # Receiver: cash asset increases
+    receiver_cash["amount"] += amount
+
+    ledger.record_transaction(sender, receiver, "cash", amount, "payment")
     ledger.save()
 
-    console.print(f"[green]✓[/green] [bold yellow]{sender}[/bold yellow] paid [bold]{amount:,.0f}[/bold] [cyan]{instrument}[/cyan] → [bold yellow]{receiver}[/bold yellow]")
+    from renderer import render_entity
+    console.print(
+        f"[green]✓[/green] [bold yellow]{sender}[/bold yellow] paid "
+        f"[bold]{amount:,.0f}[/bold] cash → [bold yellow]{receiver}[/bold yellow]"
+    )
+    console.print(render_entity(s))
+    console.print(render_entity(r))
 
 
 # ── DEPOSIT ─────────────────────────────────────────────────────────────────
