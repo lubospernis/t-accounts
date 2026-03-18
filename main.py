@@ -209,6 +209,111 @@ def issue(
     console.print(render_entity(receiver, ledger=ledger))
 
 
+
+# ── REDEEM ───────────────────────────────────────────────────────────────────
+
+@app.command()
+def redeem(
+    redeemer: str = typer.Argument(..., help="Entity redeeming the token"),
+    token: str = typer.Argument(..., help="Token to redeem, e.g. 'tokenusd'"),
+    amount: float = typer.Argument(..., help="Amount to redeem"),
+    to: str = typer.Option(..., "--to", help="Issuer entity (who originally issued the token)"),
+):
+    """
+    Redeem tokens against the issuer. Trad world only.
+
+    Two things happen simultaneously:
+
+      Burn:
+        Redeemer:  token asset ↓       (tokens destroyed)
+        Issuer:    token liability ↓   (supply shrinks)
+
+      Cash settlement:
+        Issuer:    cash asset ↓        (pays out reserves)
+        Redeemer:  cash asset ↑        (receives cash)
+
+    Both sides of the issuer's balance sheet shrink equally.
+    The redeemer does a pure asset swap: token out, cash in. Equity unchanged.
+
+    Example:
+      redeem bob tokenusd 5 --to circle
+    """
+    if ledger.world == "crypto":
+        console.print("[red]Error:[/red] redeem is a trad world operation only.")
+        raise typer.Exit(1)
+
+    try:
+        red = ledger.get(redeemer)
+        issuer = ledger.get(to)
+    except ValueError as ex:
+        console.print(f"[red]Error:[/red] {ex}")
+        raise typer.Exit(1)
+
+    # Validate redeemer holds enough of the token
+    token_entry = next((e for e in red.assets if e["label"] == token), None)
+    if token_entry is None:
+        console.print(f"[red]Error:[/red] [bold yellow]{redeemer}[/bold yellow] holds no [cyan]{token}[/cyan].")
+        raise typer.Exit(1)
+    if token_entry["amount"] < amount:
+        console.print(
+            f"[red]Error:[/red] [bold yellow]{redeemer}[/bold yellow] only holds "
+            f"[bold]{token_entry['amount']:,.0f}[/bold] [cyan]{token}[/cyan], "
+            f"cannot redeem [bold]{amount:,.0f}[/bold]."
+        )
+        raise typer.Exit(1)
+
+    # Validate issuer has enough token liability outstanding
+    liab_entry = next((e for e in issuer.liabilities if e["label"] == token), None)
+    if liab_entry is None or liab_entry["amount"] < amount:
+        outstanding = liab_entry["amount"] if liab_entry else 0
+        console.print(
+            f"[red]Error:[/red] [bold yellow]{to}[/bold yellow] only has "
+            f"[bold]{outstanding:,.0f}[/bold] [cyan]{token}[/cyan] outstanding, "
+            f"cannot redeem [bold]{amount:,.0f}[/bold]."
+        )
+        raise typer.Exit(1)
+
+    # Validate issuer has enough cash to pay out
+    issuer_cash = next((e for e in issuer.assets if e["label"] == "cash"), None)
+    if issuer_cash is None or issuer_cash["amount"] < amount:
+        avail = issuer_cash["amount"] if issuer_cash else 0
+        console.print(
+            f"[red]Error:[/red] [bold yellow]{to}[/bold yellow] has insufficient cash: "
+            f"[bold]{avail:,.0f}[/bold] available, [bold]{amount:,.0f}[/bold] needed."
+        )
+        raise typer.Exit(1)
+
+    # ── Burn ─────────────────────────────────────────────────────────────────
+    # Redeemer: token asset shrinks
+    token_entry["amount"] -= amount
+    if token_entry["amount"] == 0:
+        red.assets.remove(token_entry)
+
+    # Issuer: token liability shrinks (supply burned)
+    liab_entry["amount"] -= amount
+    if liab_entry["amount"] == 0:
+        issuer.liabilities.remove(liab_entry)
+
+    # ── Cash settlement ───────────────────────────────────────────────────────
+    # Uses transfer_cash so the payment is recorded in the graph
+    try:
+        ledger.transfer_cash(to, redeemer, amount, tx_type="redeem")
+    except ValueError as ex:
+        console.print(f"[red]Error:[/red] {ex}")
+        raise typer.Exit(1)
+
+    fv = ledger.token_fiat_value(token, amount, issuer.currency)
+    sym = "$" if issuer.currency == "USD" else "€"
+    fv_note = f" [dim]({sym}{fv:,.0f})[/dim]" if fv is not None else ""
+    console.print(
+        f"[green]✓[/green] [bold yellow]{redeemer}[/bold yellow] redeemed "
+        f"[bold]{amount:,.0f}[/bold] [cyan]{token}[/cyan]{fv_note} → "
+        f"[bold]{sym}{amount:,.0f}[/bold] cash from [bold yellow]{to}[/bold yellow]"
+    )
+    console.print(render_entity(red, ledger=ledger))
+    console.print(render_entity(issuer, ledger=ledger))
+
+
 # ── PAY ──────────────────────────────────────────────────────────────────────
 
 @app.command()
