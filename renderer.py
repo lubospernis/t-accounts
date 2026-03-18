@@ -1,31 +1,71 @@
 """
-renderer.py — Beautiful T-account display using Rich.
+renderer.py — T-account display using Rich.
 
-Equity is always the last row on the right side, rendered in magenta.
-Amounts use the entity's currency format if set (e.g. $1M, €1.5B).
+Trad world:  yellow borders, green assets, red liabilities
+Crypto world: cyan borders, blue assets, yellow liabilities, token emojis
 """
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.columns import Columns
+from rich.text import Text
 from rich import box
-from ledger import Entity, Ledger
+from ledger import Entity, Ledger, token_emoji
 
 console = Console()
 
+WORLD_STYLES = {
+    "trad": {
+        "border": "yellow",
+        "title": "bold yellow",
+        "asset_col": "green",
+        "liab_col": "red",
+        "equity_col": "magenta",
+        "header": "bold cyan",
+    },
+    "crypto": {
+        "border": "cyan",
+        "title": "bold cyan",
+        "asset_col": "blue",
+        "liab_col": "yellow",
+        "equity_col": "magenta",
+        "header": "bold blue",
+    },
+}
+
+
+def world_banner(world: str) -> str:
+    if world == "crypto":
+        return "⛓️  [bold cyan]CRYPTO WORLD[/bold cyan] — token balances only  ⛓️"
+    return "🏦 [bold yellow]TRAD WORLD[/bold yellow] — cash & deposits"
+
+
+def _fmt_entry(entity: Entity, entry: dict) -> str:
+    """Format a single entry's amount, injecting token emoji in crypto world."""
+    label = entry["label"]
+    amount = entry["amount"]
+    if entity._world == "crypto":
+        # detect token name: strip deposit@ prefix for display
+        tok = label.replace("deposit@", "").replace("deposit-", "")
+        formatted = entity.fmt(amount, label=tok)
+    else:
+        formatted = entity.fmt(amount)
+    return formatted
+
 
 def render_entity(entity: Entity) -> Panel:
-    f = entity.fmt  # shorthand
+    s = WORLD_STYLES[entity._world]
+    f = entity.fmt
 
     table = Table(
         box=box.SIMPLE_HEAD,
         show_header=True,
-        header_style="bold cyan",
+        header_style=s["header"],
         expand=True,
         padding=(0, 1),
     )
-    table.add_column("ASSETS", style="green", justify="left")
-    table.add_column("LIABILITIES & EQUITY", style="red", justify="left")
+    table.add_column("ASSETS", style=s["asset_col"], justify="left")
+    table.add_column("LIABILITIES & EQUITY", style=s["liab_col"], justify="left")
 
     assets = entity.assets
     liabs = entity.liabilities
@@ -36,44 +76,86 @@ def render_entity(entity: Entity) -> Panel:
         l_cell = ""
         if i < len(assets):
             a = assets[i]
-            a_cell = f"{a['label']}  [bold]{f(a['amount'])}[/bold]"
+            a_cell = f"{a['label']}  [bold]{_fmt_entry(entity, a)}[/bold]"
             if a.get("counterparty"):
                 a_cell += f" [dim]← {a['counterparty']}[/dim]"
         if i < len(liabs):
             l = liabs[i]
-            l_cell = f"{l['label']}  [bold]{f(l['amount'])}[/bold]"
+            l_cell = f"{l['label']}  [bold]{_fmt_entry(entity, l)}[/bold]"
             if l.get("counterparty"):
                 l_cell += f" [dim]→ {l['counterparty']}[/dim]"
         table.add_row(a_cell, l_cell)
 
-    # Equity row — residual, always in magenta
-    eq = entity.equity()
-    eq_fmt = f(eq, signed=True)
-    table.add_row(
-        "",
-        f"[bold magenta]equity  {eq_fmt}[/bold magenta]  [dim magenta](= A − L)[/dim magenta]"
-    )
-
-    # Totals row
     table.add_row("─" * 20, "─" * 20)
-    table.add_row(
-        f"[bold]TOTAL  {f(entity.total_assets())}[/bold]",
-        f"[bold]TOTAL  {f(entity.total_liabilities_and_equity())}[/bold]  [green]✓[/green]",
-    )
 
-    cur_label = f" [dim]{entity.currency}[/dim]" if entity.currency else ""
-    return Panel(
-        table,
-        title=f"[bold yellow]{entity.name}[/bold yellow]{cur_label}",
-        border_style="yellow",
+    if entity._world == "crypto":
+        # Per-token net position: held - owed, one row per token
+        # Collect held (assets) and owed (liabilities) per token
+        held: dict[str, float] = {}
+        owed: dict[str, float] = {}
+        for e in entity.assets:
+            held[e["label"]] = held.get(e["label"], 0) + e["amount"]
+        for e in entity.liabilities:
+            owed[e["label"]] = owed.get(e["label"], 0) + e["amount"]
+
+        all_tokens = sorted(set(list(held.keys()) + list(owed.keys())))
+        if all_tokens:
+            for tok in all_tokens:
+                emoji = token_emoji(tok)
+                h = held.get(tok, 0)
+                o = owed.get(tok, 0)
+                net = h - o
+                net_str = f"+{net:,.0f}" if net > 0 else f"{net:,.0f}"
+                flag = "  [bold red]⚠ short[/bold red]" if net < 0 else "  [green]✓[/green]"
+                table.add_row(
+                    f"[bold]{tok} {emoji}[/bold]",
+                    f"[bold {s['equity_col']}]net {net_str}[/bold {s['equity_col']}]{flag}",
+                )
+        else:
+            table.add_row("[dim]empty[/dim]", "")
+    else:
+        # Trad world: equity row + totals
+        eq = entity.equity()
+        eq_fmt = f(eq, signed=True)
+        table.add_row(
+            "",
+            f"[bold {s['equity_col']}]equity  {eq_fmt}[/bold {s['equity_col']}]  "
+            f"[dim {s['equity_col']}](= A − L)[/dim {s['equity_col']}]"
+        )
+        table.add_row(
+            f"[bold]TOTAL  {f(entity.total_assets())}[/bold]",
+            f"[bold]TOTAL  {f(entity.total_liabilities_and_equity())}[/bold]  [green]✓[/green]",
+        )
+
+    # Hide currency denomination in crypto world — it's irrelevant there
+    cur_label = f" [dim]{entity.currency}[/dim]" if (entity.currency and entity._world == "trad") else ""
+    world_tag = " [dim cyan]⛓[/dim cyan]" if entity._world == "crypto" else ""
+    title = f"[{s['title']}]{entity.name}[/{s['title']}]{cur_label}{world_tag}"
+    return Panel(table, title=title, border_style=s["border"])
+
+
+def _has_tokens(entity) -> bool:
+    """True if entity holds any token assets (non-cash, non-deposit@ entries)."""
+    return any(
+        not e["label"].startswith("deposit@") and e["label"] != "cash"
+        for e in entity.assets
     )
 
 
 def render_all(ledger: Ledger):
     if not ledger.entities:
-        console.print("[dim]No entities yet. Use 'create <n> <reserves>' to start.[/dim]")
+        console.print("[dim]No entities yet.[/dim]")
         return
-    panels = [render_entity(e) for e in ledger.entities.values()]
+    console.print(world_banner(ledger.world))
+    if ledger.world == "crypto":
+        # Only show entities that hold token assets — issuers/banks are invisible
+        visible = [e for e in ledger.entities.values() if _has_tokens(e)]
+        if not visible:
+            console.print("[dim cyan]No token holders yet. Issue tokens in trad world first, then worldswitch.[/dim cyan]")
+            return
+    else:
+        visible = list(ledger.entities.values())
+    panels = [render_entity(e) for e in visible]
     console.print(Columns(panels, equal=True, expand=True))
 
 
@@ -94,20 +176,50 @@ def render_graph(ledger: Ledger):
     lines = []
     seen_nodes = set()
 
-    for sender, targets in graph.items():
-        for receiver, flows in targets.items():
-            seen_nodes.add(sender)
-            seen_nodes.add(receiver)
-            for instrument, amount, tx_type in flows:
-                lines.append(
-                    f"[cyan]{sender}[/cyan] [dim]──[{instrument} {amount:,.0f}]──▶[/dim] [cyan]{receiver}[/cyan]"
-                )
+    if ledger.world == "crypto":
+        # Crypto: labelled P2P token arrows, only token holders as nodes
+        token_holders = {
+            name for name, e in ledger.entities.items() if _has_tokens(e)
+        }
+        for sender, targets in graph.items():
+            for receiver, flows in targets.items():
+                if sender not in token_holders and receiver not in token_holders:
+                    continue
+                seen_nodes.add(sender)
+                seen_nodes.add(receiver)
+                for instrument, amount, tx_type in flows:
+                    emoji = token_emoji(instrument)
+                    lines.append(
+                        f"[cyan]{sender}[/cyan] "
+                        f"[dim]──[/dim][bold cyan]{instrument} {emoji} {amount:,.0f}[/bold cyan][dim]──▶[/dim] "
+                        f"[cyan]{receiver}[/cyan]"
+                    )
+        lonely = token_holders - seen_nodes
+        if lonely:
+            lines.append("")
+            for node in sorted(lonely):
+                lines.append(f"[cyan]{node}[/cyan]  [dim](no transactions)[/dim]")
+    else:
+        # Trad: unlabelled cash arrows
+        for sender, targets in graph.items():
+            for receiver, flows in targets.items():
+                seen_nodes.add(sender)
+                seen_nodes.add(receiver)
+                for instrument, amount, tx_type in flows:
+                    lines.append(
+                        f"[cyan]{sender}[/cyan] [dim]──[{instrument} {amount:,.0f}]──▶[/dim] [cyan]{receiver}[/cyan]"
+                    )
+        lonely = set(ledger.entities.keys()) - seen_nodes
+        if lonely:
+            lines.append("")
+            for node in sorted(lonely):
+                lines.append(f"[cyan]{node}[/cyan]  [dim](no transactions)[/dim]")
 
-    lonely = set(ledger.entities.keys()) - seen_nodes
-    if lonely:
-        lines.append("")
-        for node in lonely:
-            lines.append(f"[cyan]{node}[/cyan]  [dim](no transactions)[/dim]")
-
+    world_str = "⛓️  Crypto" if ledger.world == "crypto" else "🏦 Trad"
+    border = "cyan" if ledger.world == "crypto" else "magenta"
     panel_content = "\n".join(lines) if lines else "[dim]empty[/dim]"
-    console.print(Panel(panel_content, title="[bold magenta]Payment Flow Graph[/bold magenta]", border_style="magenta"))
+    console.print(Panel(
+        panel_content,
+        title=f"[bold {border}]{world_str} Payment Flow Graph[/bold {border}]",
+        border_style=border,
+    ))

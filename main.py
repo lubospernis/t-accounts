@@ -208,26 +208,24 @@ def pay(
     sender: str = typer.Argument(..., help="Sending entity"),
     receiver: str = typer.Argument(..., help="Receiving entity"),
     amount: float = typer.Argument(..., help="Amount to transfer"),
+    token: Optional[str] = typer.Option(None, "--token", help="Token to use (crypto world; auto-detected if unambiguous)"),
 ):
     """
-    Payment between two entities. Two cases:
+    Payment between two entities.
 
-    INTRABANK — both hold deposits at the same institution:
-      Sender:   deposit@bank ↓
-      Receiver: deposit@bank ↑
-      Bank:     deposit-sender ↓, deposit-receiver ↑
-      (no cash moves, not recorded in payment graph)
+    TRAD WORLD — two cases:
+      Intrabank: both hold deposits at the same bank → swap deposit balances, no cash, not in graph
+      Cash: direct cash transfer → recorded in graph
 
-    CASH — sender holds cash directly:
-      Sender:   cash ↓
-      Receiver: cash ↑
-      (recorded in payment graph)
+    CRYPTO WORLD — token payment only:
+      Sender must hold the token as an asset.
+      Auto-detected if sender holds exactly one token type.
+      Use --token <name> if ambiguous.
+      Intrabank token settlement works the same as trad.
 
-    Intrabank is detected automatically. If both share a deposit institution
-    and sender has enough there, it settles intrabank. Otherwise falls back
-    to a direct cash payment.
-
-    Example: pay alice bob 30
+    Examples:
+      pay alice bob 30
+      pay alice bob 10 --token tokenusd
     """
     try:
         s = ledger.get(sender)
@@ -236,75 +234,92 @@ def pay(
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
 
-    # Detect shared deposit institution
-    sender_deposits = {
-        e["label"].removeprefix("deposit@"): e
-        for e in s.assets if e["label"].startswith("deposit@")
-    }
-    receiver_deposits = {
-        e["label"].removeprefix("deposit@"): e
-        for e in r.assets if e["label"].startswith("deposit@")
-    }
-    shared = set(sender_deposits) & set(receiver_deposits)
+    if ledger.world == "crypto":
+        # ── Crypto world: direct P2P token transfer, always in graph ──────────
+        if not token:
+            sender_tokens = [e["label"] for e in s.assets]
+            if len(sender_tokens) == 0:
+                console.print(f"[red]Error:[/red] [bold cyan]{sender}[/bold cyan] holds no tokens.")
+                raise typer.Exit(1)
+            if len(sender_tokens) > 1:
+                console.print(
+                    f"[red]Error:[/red] [bold cyan]{sender}[/bold cyan] holds multiple tokens "
+                    f"({', '.join(sender_tokens)}). Use --token <n>."
+                )
+                raise typer.Exit(1)
+            token = sender_tokens[0]
 
-    # Pick the first shared bank where sender has enough
-    intrabank = next(
-        (bank for bank in shared if sender_deposits[bank]["amount"] >= amount),
-        None
-    )
-
-    if intrabank:
-        # ── Intrabank settlement — no cash moves, not in graph ────────────────
         try:
-            bank_entity = ledger.get(intrabank)
+            ledger.transfer_token(sender, receiver, token, amount, tx_type="payment")
         except ValueError as ex:
             console.print(f"[red]Error:[/red] {ex}")
             raise typer.Exit(1)
 
-        # Sender: deposit claim shrinks
-        sd = sender_deposits[intrabank]
-        sd["amount"] -= amount
-        if sd["amount"] == 0:
-            s.assets.remove(sd)
-
-        # Receiver: deposit claim grows
-        receiver_deposits[intrabank]["amount"] += amount
-
-        # Bank: rebalance deposit liabilities
-        dep_sender = next((e for e in bank_entity.liabilities if e["label"] == f"deposit-{sender}"), None)
-        dep_receiver = next((e for e in bank_entity.liabilities if e["label"] == f"deposit-{receiver}"), None)
-        if dep_sender:
-            dep_sender["amount"] -= amount
-            if dep_sender["amount"] == 0:
-                bank_entity.liabilities.remove(dep_sender)
-        if dep_receiver:
-            dep_receiver["amount"] += amount
-
-        ledger.save()
-
+        from ledger import token_emoji
+        emoji = token_emoji(token)
         console.print(
-            f"[green]✓[/green] [bold yellow]{sender}[/bold yellow] paid "
-            f"[bold]{amount:,.0f}[/bold] → [bold yellow]{receiver}[/bold yellow] "
-            f"[dim](settled at {intrabank}, no cash moved)[/dim]"
-        )
-        console.print(render_entity(s))
-        console.print(render_entity(r))
-        console.print(render_entity(bank_entity))
-
-    else:
-        # ── Cash payment — recorded in graph ─────────────────────────────────
-        try:
-            ledger.transfer_cash(sender, receiver, amount, tx_type="payment")
-        except ValueError as ex:
-            console.print(f"[red]Error:[/red] {ex}")
-            raise typer.Exit(1)
-
-        console.print(
-            f"[green]✓[/green] [bold yellow]{sender}[/bold yellow] paid "
-            f"[bold]{amount:,.0f}[/bold] cash → [bold yellow]{receiver}[/bold yellow]"
+            f"[green]✓[/green] [bold cyan]{sender}[/bold cyan] paid "
+            f"[bold]{amount:,.0f}[/bold] {emoji} [cyan]{token}[/cyan] → [bold cyan]{receiver}[/bold cyan]"
         )
         console.print(render_entity(ledger.get(sender)))
         console.print(render_entity(ledger.get(receiver)))
+
+    else:
+        # ── Trad world: cash or intrabank ─────────────────────────────────────
+        sender_deposits = {
+            e["label"].removeprefix("deposit@"): e
+            for e in s.assets if e["label"].startswith("deposit@")
+        }
+        receiver_deposits = {
+            e["label"].removeprefix("deposit@"): e
+            for e in r.assets if e["label"].startswith("deposit@")
+        }
+        shared = set(sender_deposits) & set(receiver_deposits)
+        intrabank = next(
+            (bank for bank in shared if sender_deposits[bank]["amount"] >= amount),
+            None
+        )
+
+        if intrabank:
+            try:
+                bank_entity = ledger.get(intrabank)
+            except ValueError as ex:
+                console.print(f"[red]Error:[/red] {ex}")
+                raise typer.Exit(1)
+            sd = sender_deposits[intrabank]
+            sd["amount"] -= amount
+            if sd["amount"] == 0:
+                s.assets.remove(sd)
+            receiver_deposits[intrabank]["amount"] += amount
+            dep_sender = next((e for e in bank_entity.liabilities if e["label"] == f"deposit-{sender}"), None)
+            dep_receiver = next((e for e in bank_entity.liabilities if e["label"] == f"deposit-{receiver}"), None)
+            if dep_sender:
+                dep_sender["amount"] -= amount
+                if dep_sender["amount"] == 0:
+                    bank_entity.liabilities.remove(dep_sender)
+            if dep_receiver:
+                dep_receiver["amount"] += amount
+            ledger.save()
+            console.print(
+                f"[green]✓[/green] [bold yellow]{sender}[/bold yellow] paid "
+                f"[bold]{amount:,.0f}[/bold] → [bold yellow]{receiver}[/bold yellow] "
+                f"[dim](settled at {intrabank}, no cash moved)[/dim]"
+            )
+            console.print(render_entity(s))
+            console.print(render_entity(r))
+            console.print(render_entity(bank_entity))
+        else:
+            try:
+                ledger.transfer_cash(sender, receiver, amount, tx_type="payment")
+            except ValueError as ex:
+                console.print(f"[red]Error:[/red] {ex}")
+                raise typer.Exit(1)
+            console.print(
+                f"[green]✓[/green] [bold yellow]{sender}[/bold yellow] paid "
+                f"[bold]{amount:,.0f}[/bold] cash → [bold yellow]{receiver}[/bold yellow]"
+            )
+            console.print(render_entity(ledger.get(sender)))
+            console.print(render_entity(ledger.get(receiver)))
 
 
 # ── DEPOSIT ──────────────────────────────────────────────────────────────────
@@ -551,6 +566,30 @@ def reset(
         return
     ledger.reset()
     console.print("[red]✓ Reset complete.[/red]")
+
+
+# ── WORLDSWITCH ───────────────────────────────────────────────────────────────
+
+@app.command()
+def worldswitch():
+    """
+    Toggle between trad and crypto world.
+
+    Trad world:   cash-based, full T-accounts, yellow borders
+    Crypto world: token-only, no cash concept, cyan borders + emojis
+
+    Crypto balance sheets start empty — only tokens issued via 'issue'
+    appear. All entities exist in both worlds. Switching immediately
+    shows all balance sheets in the new world.
+
+    Example:
+      worldswitch   (trad → crypto)
+      worldswitch   (crypto → trad)
+    """
+    new_world = ledger.switch_world()
+    label = "⛓️  [bold cyan]CRYPTO WORLD[/bold cyan]" if new_world == "crypto" else "🏦 [bold yellow]TRAD WORLD[/bold yellow]"
+    console.print(f"\n[bold]Switched to {label}[/bold]\n")
+    render_all(ledger)
 
 
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────

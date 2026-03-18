@@ -36,14 +36,30 @@ def entity_to_md(entity: Entity) -> str:
             l_cell = f"{l['label']} {f(l['amount'])}{suffix}"
         lines.append(f"| {a_cell} | {l_cell} |")
 
-    eq = entity.equity()
-    eq_fmt = f(eq, signed=True)
-    lines.append(f"|  | ***equity {eq_fmt}*** *(= A − L)* |")
-
-    lines.append(
-        f"| **TOTAL {f(entity.total_assets())}** "
-        f"| **TOTAL {f(entity.total_liabilities_and_equity())}** ✓ |"
-    )
+    if entity._world == "crypto":
+        # Per-token net position rows
+        held: dict[str, float] = {}
+        owed: dict[str, float] = {}
+        for e in entity.assets:
+            held[e["label"]] = held.get(e["label"], 0) + e["amount"]
+        for e in entity.liabilities:
+            owed[e["label"]] = owed.get(e["label"], 0) + e["amount"]
+        from ledger import token_emoji
+        for tok in sorted(set(list(held.keys()) + list(owed.keys()))):
+            from ledger import token_emoji as te
+            emoji = te(tok)
+            net = held.get(tok, 0) - owed.get(tok, 0)
+            net_str = f"+{net:,.0f}" if net > 0 else f"{net:,.0f}"
+            flag = "⚠ short" if net < 0 else "✓"
+            lines.append(f"| **{tok} {emoji}** | **net {net_str}** {flag} |")
+    else:
+        eq = entity.equity()
+        eq_fmt = f(eq, signed=True)
+        lines.append(f"|  | ***equity {eq_fmt}*** *(= A − L)* |")
+        lines.append(
+            f"| **TOTAL {f(entity.total_assets())}** "
+            f"| **TOTAL {f(entity.total_liabilities_and_equity())}** ✓ |"
+        )
     return "\n".join(lines)
 
 

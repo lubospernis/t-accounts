@@ -1,15 +1,24 @@
 {
+  "world": "trad",
   "entities": {
     "EURC": {
       "name": "EURC",
-      "assets": [
+      "assets_trad": [
         {
           "label": "deposit@bank",
           "amount": 10.0,
           "counterparty": "bank"
         }
       ],
-      "liabilities": [
+      "liabilities_trad": [
+        {
+          "label": "EURC",
+          "amount": 10.0,
+          "counterparty": "bob"
+        }
+      ],
+      "assets_crypto": [],
+      "liabilities_crypto": [
         {
           "label": "EURC",
           "amount": 10.0,
@@ -20,36 +29,60 @@
     },
     "bob": {
       "name": "bob",
-      "assets": [
+      "assets_trad": [
         {
           "label": "EURC",
           "amount": 10.0,
           "counterparty": "EURC"
         }
       ],
-      "liabilities": [],
+      "liabilities_trad": [],
+      "assets_crypto": [
+        {
+          "label": "EURC",
+          "amount": 10.0,
+          "counterparty": "EURC"
+        }
+      ],
+      "liabilities_crypto": [],
       "currency": "EUR"
     },
     "bank": {
       "name": "bank",
-      "assets": [
+      "assets_trad": [
         {
           "label": "cash",
           "amount": 20.0,
           "counterparty": null
         }
       ],
-      "liabilities": [
+      "liabilities_trad": [
         {
           "label": "deposit-EURC",
           "amount": 10.0,
           "counterparty": "EURC"
         }
       ],
+      "assets_crypto": [],
+      "liabilities_crypto": [],
       "currency": "EUR"
+    },
+    "alice": {
+      "name": "alice",
+      "assets_trad": [
+        {
+          "label": "cash",
+          "amount": 10.0,
+          "counterparty": null
+        }
+      ],
+      "liabilities_trad": [],
+      "assets_crypto": [],
+      "liabilities_crypto": [],
+      "currency": null
     }
   },
-  "transactions": [
+  "transactions_trad": [
     {
       "sender": "bob",
       "receiver": "bank",
@@ -64,5 +97,6 @@
       "amount": 10.0,
       "type": "issue"
     }
-  ]
+  ],
+  "transactions_crypto": []
 }
