@@ -16,14 +16,45 @@ from typing import Optional
 STATE_FILE = Path("taccounts_state.json")
 
 
+CURRENCY_SYMBOLS = {"USD": "$", "EUR": "€"}
+
+
+def fmt_amount(amount: float, currency: Optional[str] = None, signed: bool = False) -> str:
+    """Format a number with optional currency symbol and scale suffix.
+    signed=True shows explicit +/- (used for equity row)."""
+    symbol = CURRENCY_SYMBOLS.get(currency, "") if currency else ""
+    abs_amount = abs(amount)
+    neg = amount < 0
+
+    if abs_amount >= 1_000_000_000:
+        scaled = f"{abs_amount / 1_000_000_000:.2f}".rstrip("0").rstrip(".")
+        text = f"{symbol}{scaled}B"
+    elif abs_amount >= 1_000_000:
+        scaled = f"{abs_amount / 1_000_000:.2f}".rstrip("0").rstrip(".")
+        text = f"{symbol}{scaled}M"
+    else:
+        text = f"{symbol}{abs_amount:,.0f}"
+
+    if neg:
+        return "-" + text
+    if signed:
+        return "+" + text
+    return text
+
+
 @dataclass
 class Entity:
     name: str
     assets: list = field(default_factory=list)
     liabilities: list = field(default_factory=list)  # excludes residual equity
+    currency: Optional[str] = None  # e.g. "USD", "EUR" — set only via `new --currency`
 
     # Labels that always aggregate regardless of counterparty
     FUNGIBLE = {"cash"}
+
+    def fmt(self, amount: float, signed: bool = False) -> str:
+        """Format an amount using this entity's currency setting."""
+        return fmt_amount(amount, self.currency, signed=signed)
 
     # ── asset helpers ────────────────────────────────────────────────────────
 
@@ -97,7 +128,12 @@ class Ledger:
     def save(self):
         data = {
             "entities": {
-                name: {"name": e.name, "assets": e.assets, "liabilities": e.liabilities}
+                name: {
+                    "name": e.name,
+                    "assets": e.assets,
+                    "liabilities": e.liabilities,
+                    "currency": e.currency,
+                }
                 for name, e in self.entities.items()
             },
             "transactions": self.transactions,
@@ -111,6 +147,7 @@ class Ledger:
                 ent = Entity(name=ed["name"])
                 ent.assets = ed["assets"]
                 ent.liabilities = [l for l in ed["liabilities"] if l["label"] != "equity"]
+                ent.currency = ed.get("currency")
                 self.entities[name] = ent
             self.transactions = data.get("transactions", [])
 

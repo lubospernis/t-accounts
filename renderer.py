@@ -1,8 +1,8 @@
 """
 renderer.py — Beautiful T-account display using Rich.
 
-Equity is always the last row on the right side, rendered in magenta
-to distinguish it as a derived/computed balancing item.
+Equity is always the last row on the right side, rendered in magenta.
+Amounts use the entity's currency format if set (e.g. $1M, €1.5B).
 """
 from rich.console import Console
 from rich.table import Table
@@ -15,6 +15,8 @@ console = Console()
 
 
 def render_entity(entity: Entity) -> Panel:
+    f = entity.fmt  # shorthand
+
     table = Table(
         box=box.SIMPLE_HEAD,
         show_header=True,
@@ -26,7 +28,7 @@ def render_entity(entity: Entity) -> Panel:
     table.add_column("LIABILITIES & EQUITY", style="red", justify="left")
 
     assets = entity.assets
-    liabs = entity.liabilities  # explicit liabilities only, no equity
+    liabs = entity.liabilities
     max_rows = max(len(assets), len(liabs), 1)
 
     for i in range(max_rows):
@@ -34,44 +36,48 @@ def render_entity(entity: Entity) -> Panel:
         l_cell = ""
         if i < len(assets):
             a = assets[i]
-            a_cell = f"{a['label']}  [bold]{a['amount']:,.0f}[/bold]"
+            a_cell = f"{a['label']}  [bold]{f(a['amount'])}[/bold]"
             if a.get("counterparty"):
                 a_cell += f" [dim]← {a['counterparty']}[/dim]"
         if i < len(liabs):
             l = liabs[i]
-            l_cell = f"{l['label']}  [bold]{l['amount']:,.0f}[/bold]"
+            l_cell = f"{l['label']}  [bold]{f(l['amount'])}[/bold]"
             if l.get("counterparty"):
                 l_cell += f" [dim]→ {l['counterparty']}[/dim]"
         table.add_row(a_cell, l_cell)
 
-    # Equity row — always rendered in magenta as the residual balancing item
+    # Equity row — residual, always in magenta
     eq = entity.equity()
-    eq_sign = "+" if eq >= 0 else ""
+    eq_fmt = f(eq, signed=True)
     table.add_row(
         "",
-        f"[bold magenta]equity  {eq_sign}{eq:,.0f}[/bold magenta]  [dim magenta](= A − L)[/dim magenta]"
+        f"[bold magenta]equity  {eq_fmt}[/bold magenta]  [dim magenta](= A − L)[/dim magenta]"
     )
 
     # Totals row
     table.add_row("─" * 20, "─" * 20)
     table.add_row(
-        f"[bold]TOTAL  {entity.total_assets():,.0f}[/bold]",
-        f"[bold]TOTAL  {entity.total_liabilities_and_equity():,.0f}[/bold]  [green]✓[/green]",
+        f"[bold]TOTAL  {f(entity.total_assets())}[/bold]",
+        f"[bold]TOTAL  {f(entity.total_liabilities_and_equity())}[/bold]  [green]✓[/green]",
     )
 
-    return Panel(table, title=f"[bold yellow]{entity.name}[/bold yellow]", border_style="yellow")
+    cur_label = f" [dim]{entity.currency}[/dim]" if entity.currency else ""
+    return Panel(
+        table,
+        title=f"[bold yellow]{entity.name}[/bold yellow]{cur_label}",
+        border_style="yellow",
+    )
 
 
 def render_all(ledger: Ledger):
     if not ledger.entities:
-        console.print("[dim]No entities yet. Use 'create <name> <reserves>' to start.[/dim]")
+        console.print("[dim]No entities yet. Use 'create <n> <reserves>' to start.[/dim]")
         return
     panels = [render_entity(e) for e in ledger.entities.values()]
     console.print(Columns(panels, equal=True, expand=True))
 
 
 def render_graph(ledger: Ledger):
-    """Render payment flow graph as ASCII in terminal."""
     if not ledger.transactions:
         console.print("[dim]No transactions recorded yet.[/dim]")
         return

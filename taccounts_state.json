@@ -1,57 +1,68 @@
 {
   "entities": {
+    "EURC": {
+      "name": "EURC",
+      "assets": [
+        {
+          "label": "deposit@bank",
+          "amount": 10.0,
+          "counterparty": "bank"
+        }
+      ],
+      "liabilities": [
+        {
+          "label": "EURC",
+          "amount": 10.0,
+          "counterparty": "bob"
+        }
+      ],
+      "currency": "EUR"
+    },
+    "bob": {
+      "name": "bob",
+      "assets": [
+        {
+          "label": "EURC",
+          "amount": 10.0,
+          "counterparty": "EURC"
+        }
+      ],
+      "liabilities": [],
+      "currency": "EUR"
+    },
     "bank": {
       "name": "bank",
       "assets": [
         {
           "label": "cash",
-          "amount": 110.0,
+          "amount": 20.0,
           "counterparty": null
-        },
-        {
-          "label": "loan-receivable",
-          "amount": 110.0,
-          "counterparty": "bob"
         }
       ],
       "liabilities": [
         {
-          "label": "deposit-alice",
-          "amount": 120.0,
-          "counterparty": "alice"
-        }
-      ]
-    },
-    "alice": {
-      "name": "alice",
-      "assets": [
-        {
-          "label": "deposit@bank",
-          "amount": 120.0,
-          "counterparty": "bank"
+          "label": "deposit-EURC",
+          "amount": 10.0,
+          "counterparty": "EURC"
         }
       ],
-      "liabilities": []
-    },
-    "bob": {
-      "name": "bob",
-      "assets": [],
-      "liabilities": [
-        {
-          "label": "loan-payable",
-          "amount": 110.0,
-          "counterparty": "bank"
-        }
-      ]
+      "currency": "EUR"
     }
   },
   "transactions": [
     {
-      "sender": "alice",
+      "sender": "bob",
       "receiver": "bank",
       "instrument": "cash",
       "amount": 10.0,
       "type": "deposit"
+    },
+    {
+      "sender": "EURC",
+      "receiver": "bob",
+      "instrument": "EURC",
+      "amount": 10.0,
+      "type": "issue"
     }
   ]
 }

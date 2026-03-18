@@ -61,15 +61,32 @@ def create(
 @app.command()
 def new(
     entity: str = typer.Argument(..., help="Entity name, e.g. 'my-bank'"),
+    currency: Optional[str] = typer.Option(None, "--currency", help="Currency: USD or EUR"),
 ):
-    """Create a blank balance sheet with no initial entries."""
+    """
+    Create a blank balance sheet with no initial entries.
+
+    Optionally set a display currency — amounts will be shown with the
+    corresponding symbol and scale (e.g. $1M, €1.5B). Currency can only
+    be set at creation time via this command.
+
+    Examples:
+      new my-bank
+      new fed --currency USD
+      new ecb --currency EUR
+    """
     try:
         from ledger import Entity
         if entity in ledger.entities:
             raise ValueError(f"Entity '{entity}' already exists.")
-        ledger.entities[entity] = Entity(name=entity)
+        if currency and currency.upper() not in ("USD", "EUR"):
+            raise ValueError(f"Currency must be USD or EUR, got '{currency}'.")
+        ent = Entity(name=entity)
+        ent.currency = currency.upper() if currency else None
+        ledger.entities[entity] = ent
         ledger.save()
-        console.print(f"[green]✓[/green] Created blank balance sheet: [bold yellow]{entity}[/bold yellow]")
+        cur_note = f" [dim]({currency.upper()})[/dim]" if currency else ""
+        console.print(f"[green]✓[/green] Created blank balance sheet: [bold yellow]{entity}[/bold yellow]{cur_note}")
         console.print(f"[dim]Use: entry {entity} asset|liability <label> <amount>[/dim]")
     except ValueError as ex:
         console.print(f"[red]Error:[/red] {ex}")
@@ -142,8 +159,14 @@ def issue(
     to: Optional[str] = typer.Option(None, "--to", help="Receiver entity (optional)"),
 ):
     """
-    Issue a token/liability. Adds a liability on the issuer.
-    If --to is given, the receiver gets the token as an asset.
+    Issue a token. Updates both sides:
+
+      Issuer:   token liability ↑  (owes the token to the receiver)
+      Receiver: token asset ↑      (holds a claim on the issuer)
+
+    Examples:
+      issue stablecoin-issuer tokenusd 10 --to alice
+      issue central-bank reserves 100 --to commercial-bank
     """
     try:
         issuer = ledger.get(entity)
@@ -151,22 +174,31 @@ def issue(
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
 
+    if not to:
+        console.print("[red]Error:[/red] --to <receiver> is required. Use 'issue <entity> <token> <amount> --to <receiver>'.")
+        raise typer.Exit(1)
+
+    try:
+        receiver = ledger.get(to)
+    except ValueError as ex:
+        console.print(f"[red]Error:[/red] {ex}")
+        raise typer.Exit(1)
+
+    # Issuer: token is a liability (owes the token to the receiver)
     issuer.add_liability(token, amount, counterparty=to)
 
-    if to:
-        try:
-            receiver = ledger.get(to)
-        except ValueError as ex:
-            console.print(f"[red]Error:[/red] {ex}")
-            raise typer.Exit(1)
-        receiver.add_asset(token, amount, counterparty=entity)
-        ledger.record_transaction(entity, to, token, amount, "issue")
-        console.print(f"[green]✓[/green] [bold yellow]{entity}[/bold yellow] issued [bold]{amount:,.0f}[/bold] [cyan]{token}[/cyan] → [bold yellow]{to}[/bold yellow]")
-    else:
-        console.print(f"[green]✓[/green] [bold yellow]{entity}[/bold yellow] issued [bold]{amount:,.0f}[/bold] [cyan]{token}[/cyan] (outstanding)")
+    # Receiver: token is an asset (holds a claim on the issuer)
+    receiver.add_asset(token, amount, counterparty=entity)
 
+    ledger.record_transaction(entity, to, token, amount, "issue")
     ledger.save()
+
+    console.print(
+        f"[green]✓[/green] [bold yellow]{entity}[/bold yellow] issued "
+        f"[bold]{issuer.fmt(amount)}[/bold] [cyan]{token}[/cyan] → [bold yellow]{to}[/bold yellow]"
+    )
     console.print(render_entity(issuer))
+    console.print(render_entity(receiver))
 
 
 # ── PAY ──────────────────────────────────────────────────────────────────────
@@ -280,18 +312,26 @@ def pay(
 @app.command()
 def deposit(
     bank: str = typer.Argument(..., help="The bank receiving the deposit"),
-    amount: float = typer.Argument(...),
-    from_: Optional[str] = typer.Option(None, "--from", help="Depositor entity (must have enough cash)"),
+    amount: float = typer.Argument(0.0, help="Amount of cash to deposit (omit or 0 = open empty account)"),
+    from_: Optional[str] = typer.Option(None, "--from", help="Depositor entity"),
 ):
     """
-    Deposit cash from a depositor into a bank. Models both sides:
+    Deposit cash into a bank, or open an empty deposit account.
 
-      Depositor: cash ↓, deposit@bank asset ↑  (equity unchanged)
-      Bank:      cash ↑, deposit-<name> liability ↑  (equity unchanged)
+    With amount > 0 (cash deposit):
+      Depositor: cash down, deposit@bank up  (equity unchanged)
+      Bank:      cash up, deposit-<n> up     (equity unchanged)
+      Recorded in payment graph.
 
-    Cash movement goes through transfer_cash and is recorded in the graph.
+    With amount = 0 (open account):
+      Creates the deposit@bank / deposit-<n> relationship with zero balance.
+      No cash moves, not in graph. Useful to set up an account before
+      receiving intrabank payments.
 
-    Example: deposit bank 10 --from alice
+    Examples:
+      deposit bank 10 --from alice     (cash deposit)
+      deposit bank --from alice        (open empty account)
+      deposit bank 0 --from alice      (same as above)
     """
     if not from_:
         console.print("[red]Error:[/red] --from <depositor> is required.")
@@ -304,42 +344,49 @@ def deposit(
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
 
-    # Cash moves from depositor to bank (validates + records in graph)
-    try:
-        ledger.transfer_cash(from_, bank, amount, tx_type="deposit")
-    except ValueError as ex:
-        console.print(f"[red]Error:[/red] {ex}")
-        raise typer.Exit(1)
+    # Check if account already exists
+    existing_claim = next((e for e in depositor.assets if e["label"] == f"deposit@{bank}"), None)
+    if existing_claim is not None and amount == 0:
+        console.print(
+            f"[yellow]Note:[/yellow] [bold yellow]{from_}[/bold yellow] already has "
+            f"a deposit account at [bold yellow]{bank}[/bold yellow]."
+        )
+        raise typer.Exit(0)
 
-    # Swap depositor's cash entry for a deposit claim
-    dep_cash = next((e for e in depositor.assets if e["label"] == "cash"), None)
-    # transfer_cash already moved the cash to the bank — now adjust depositor's asset side:
-    # cash was reduced by transfer_cash; add deposit claim in its place
-    depositor.add_asset(f"deposit@{bank}", amount, counterparty=bank)
+    if amount > 0:
+        # Cash moves — validated and recorded in graph
+        try:
+            ledger.transfer_cash(from_, bank, amount, tx_type="deposit")
+        except ValueError as ex:
+            console.print(f"[red]Error:[/red] {ex}")
+            raise typer.Exit(1)
 
-    # Bank already gained cash via transfer_cash; add the matching deposit liability
-    b.add_liability(f"deposit-{from_}", amount, counterparty=from_)
+    # Create or update deposit claim on depositor side
+    if existing_claim:
+        existing_claim["amount"] += amount
+    else:
+        depositor.assets.append({"label": f"deposit@{bank}", "amount": amount, "counterparty": bank})
 
-    # But transfer_cash also added cash to the bank's asset — we need to undo the
-    # intermediate step where transfer_cash gave the receiver raw cash, since
-    # the bank's cash asset is already correct from transfer_cash.
-    # The depositor's cash was already reduced. Now remove the plain cash the
-    # transfer_cash added to the bank (it's correct) but we need to also
-    # remove the cash that transfer_cash added to the depositor's side... 
-    # Actually: transfer_cash(from_, bank) already:
-    #   - reduced depositor cash by amount  ✓
-    #   - increased bank cash by amount     ✓
-    # We just need the extra accounting entries on top:
-    #   - depositor gains deposit@bank      ✓ (done above)
-    #   - bank gains deposit liability      ✓ (done above)
-    # But transfer_cash already called record_transaction, so graph is updated. Good.
+    # Create or update deposit liability on bank side
+    dep_label = f"deposit-{from_}"
+    dep_liab = next((e for e in b.liabilities if e["label"] == dep_label), None)
+    if dep_liab:
+        dep_liab["amount"] += amount
+    else:
+        b.liabilities.append({"label": dep_label, "amount": amount, "counterparty": from_})
 
     ledger.save()
 
-    console.print(
-        f"[green]✓[/green] [bold yellow]{from_}[/bold yellow] deposited "
-        f"[bold]{amount:,.0f}[/bold] cash into [bold yellow]{bank}[/bold yellow]"
-    )
+    if amount > 0:
+        console.print(
+            f"[green]✓[/green] [bold yellow]{from_}[/bold yellow] deposited "
+            f"[bold]{depositor.fmt(amount)}[/bold] into [bold yellow]{bank}[/bold yellow]"
+        )
+    else:
+        console.print(
+            f"[green]✓[/green] Opened empty deposit account for [bold yellow]{from_}[/bold yellow] "
+            f"at [bold yellow]{bank}[/bold yellow]"
+        )
     console.print(render_entity(depositor))
     console.print(render_entity(b))
 

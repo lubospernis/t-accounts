@@ -13,12 +13,14 @@ OUTPUT_FILE = Path("balancesheets.md")
 
 
 def entity_to_md(entity: Entity) -> str:
-    lines = [f"### {entity.name}\n"]
+    f = entity.fmt
+    cur_note = f" ({entity.currency})" if entity.currency else ""
+    lines = [f"### {entity.name}{cur_note}\n"]
     lines.append("| Assets | Liabilities & Equity |")
     lines.append("|--------|----------------------|")
 
     assets = entity.assets
-    liabs = entity.liabilities  # explicit liabilities only
+    liabs = entity.liabilities
     max_rows = max(len(assets), len(liabs), 1)
 
     for i in range(max_rows):
@@ -27,22 +29,20 @@ def entity_to_md(entity: Entity) -> str:
         if i < len(assets):
             a = assets[i]
             suffix = f" ← {a['counterparty']}" if a.get("counterparty") else ""
-            a_cell = f"{a['label']} {a['amount']:,.0f}{suffix}"
+            a_cell = f"{a['label']} {f(a['amount'])}{suffix}"
         if i < len(liabs):
             l = liabs[i]
             suffix = f" → {l['counterparty']}" if l.get("counterparty") else ""
-            l_cell = f"{l['label']} {l['amount']:,.0f}{suffix}"
+            l_cell = f"{l['label']} {f(l['amount'])}{suffix}"
         lines.append(f"| {a_cell} | {l_cell} |")
 
-    # Equity row — derived, marked distinctly
     eq = entity.equity()
-    eq_sign = "+" if eq >= 0 else ""
-    lines.append(f"|  | ***equity {eq_sign}{eq:,.0f}*** *(= A − L)* |")
+    eq_fmt = f(eq, signed=True)
+    lines.append(f"|  | ***equity {eq_fmt}*** *(= A − L)* |")
 
-    # Totals
     lines.append(
-        f"| **TOTAL {entity.total_assets():,.0f}** "
-        f"| **TOTAL {entity.total_liabilities_and_equity():,.0f}** ✓ |"
+        f"| **TOTAL {f(entity.total_assets())}** "
+        f"| **TOTAL {f(entity.total_liabilities_and_equity())}** ✓ |"
     )
     return "\n".join(lines)
 
