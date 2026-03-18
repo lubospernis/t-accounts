@@ -247,26 +247,72 @@ def pay(
 
 @app.command()
 def deposit(
-    entity: str = typer.Argument(...),
-    asset: str = typer.Argument(..., help="Asset label, e.g. 'cash', 'bonds'"),
+    bank: str = typer.Argument(..., help="The bank receiving the deposit"),
     amount: float = typer.Argument(...),
-    from_: Optional[str] = typer.Option(None, "--from", help="Counterparty"),
+    from_: Optional[str] = typer.Option(None, "--from", help="Depositor entity (must have enough cash)"),
 ):
-    """Add an asset to an entity (e.g. external deposit of cash)."""
+    """
+    Deposit cash from a depositor into a bank. Models both sides:
+
+      Depositor: cash asset ↓, deposit-claim asset ↑ (net zero, equity unchanged)
+      Bank:      cash asset ↑, deposit liability ↑   (net zero, equity unchanged)
+
+    Both entities must already exist. Depositor must have enough cash.
+
+    Example: deposit bank 10 --from alice
+    """
     try:
-        e = ledger.get(entity)
+        b = ledger.get(bank)
     except ValueError as ex:
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
 
-    e.add_asset(asset, amount, counterparty=from_)
-    # Auto-balance: add matching liability (deposit liability to counterparty)
-    if from_:
-        e.add_liability(f"deposit-{from_}", amount, counterparty=from_)
-        ledger.record_transaction(from_, entity, asset, amount, "deposit")
+    if not from_:
+        console.print("[red]Error:[/red] --from <depositor> is required.")
+        raise typer.Exit(1)
 
+    try:
+        depositor = ledger.get(from_)
+    except ValueError as ex:
+        console.print(f"[red]Error:[/red] {ex}")
+        raise typer.Exit(1)
+
+    # Validate depositor has enough cash
+    dep_cash = next((e for e in depositor.assets if e["label"] == "cash"), None)
+    if dep_cash is None:
+        console.print(f"[red]Error:[/red] [bold yellow]{from_}[/bold yellow] has no cash asset.")
+        raise typer.Exit(1)
+    if dep_cash["amount"] < amount:
+        console.print(
+            f"[red]Error:[/red] [bold yellow]{from_}[/bold yellow] has insufficient cash: "
+            f"[bold]{dep_cash['amount']:,.0f}[/bold] available, [bold]{amount:,.0f}[/bold] requested."
+        )
+        raise typer.Exit(1)
+
+    # ── Depositor side ───────────────────────────────────────────────────────
+    # Cash goes out
+    dep_cash["amount"] -= amount
+    if dep_cash["amount"] == 0:
+        depositor.assets.remove(dep_cash)
+    # Deposit claim comes in (asset: money owed back by bank)
+    depositor.add_asset(f"deposit@{bank}", amount, counterparty=bank)
+
+    # ── Bank side ────────────────────────────────────────────────────────────
+    # Cash comes in
+    b.add_asset("cash", amount, counterparty=from_)
+    # Deposit liability goes out (owes the depositor)
+    b.add_liability(f"deposit-{from_}", amount, counterparty=from_)
+
+    ledger.record_transaction(from_, bank, "cash", amount, "deposit")
     ledger.save()
-    console.print(f"[green]✓[/green] Deposited [bold]{amount:,.0f}[/bold] [cyan]{asset}[/cyan] into [bold yellow]{entity}[/bold yellow]")
+
+    from renderer import render_entity
+    console.print(
+        f"[green]✓[/green] [bold yellow]{from_}[/bold yellow] deposited "
+        f"[bold]{amount:,.0f}[/bold] cash into [bold yellow]{bank}[/bold yellow]"
+    )
+    console.print(render_entity(depositor))
+    console.print(render_entity(b))
 
 
 # ── BORROW ──────────────────────────────────────────────────────────────────

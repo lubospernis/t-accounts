@@ -120,8 +120,9 @@ class Ledger:
         if name in self.entities:
             raise ValueError(f"Entity '{name}' already exists.")
         e = Entity(name=name)
-        e.add_asset("cash", reserves)
-        # No explicit equity entry — it's computed as reserves - 0 = reserves
+        if reserves > 0:
+            e.add_asset("cash", reserves)
+        # No explicit equity entry — it's computed as assets - liabilities
         self.entities[name] = e
         self.save()
         return e
