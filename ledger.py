@@ -2,16 +2,16 @@
 ledger.py — T-account state for all entities.
 
 Two worlds: "trad" (default) and "crypto".
-  - trad:   cash-based, full T-accounts
-  - crypto: token-only, no cash concept, sheets start empty
+  - trad:   cash-based, full T-accounts, currency-denominated
+  - crypto: token-only, per-token net positions
 
-Each entity holds separate asset/liability lists per world.
-The active world is set on Ledger; entity.assets / entity.liabilities
-always return the active world's lists via the Ledger.active_world property.
+Currency defaults to USD for all entities.
 
-Accounting identity: Assets = Liabilities + Equity (equity is always residual).
-All cash movements go through transfer_cash() in trad world.
-All token movements go through transfer_token() in crypto world.
+Token prices:
+  - Stablecoins: tokenusd=1 USD, tokeneur=1 EUR (hardcoded)
+  - Others: set via Ledger.token_prices dict, or `price` command
+  - Trad world shows fiat value next to token quantities where a price is known
+  - Crypto write-back: transfer_token also updates assets_trad so both worlds stay in sync
 """
 import json
 from pathlib import Path
@@ -21,8 +21,8 @@ from typing import Optional
 STATE_FILE = Path("taccounts_state.json")
 
 CURRENCY_SYMBOLS = {"USD": "$", "EUR": "€"}
+DEFAULT_CURRENCY = "USD"
 
-# Token emoji lookup for crypto world display
 TOKEN_EMOJI = {
     "tokenusd": "💵",
     "tokeneur": "💶",
@@ -30,6 +30,12 @@ TOKEN_EMOJI = {
     "tokeneth": "Ξ",
 }
 DEFAULT_TOKEN_EMOJI = "🪙"
+
+# Stablecoin pegs: token → (fiat_amount, currency)
+STABLECOIN_PEGS: dict[str, tuple[float, str]] = {
+    "tokenusd": (1.0, "USD"),
+    "tokeneur": (1.0, "EUR"),
+}
 
 
 def token_emoji(label: str) -> str:
@@ -41,10 +47,9 @@ def fmt_amount(amount: float, currency: Optional[str] = None, signed: bool = Fal
     """Format a number with optional currency symbol/token emoji and scale suffix.
     In crypto world, currency symbols are suppressed — only token emojis apply."""
     if world == "crypto":
-        # Never show fiat symbols in crypto world
         symbol = (token_emoji(token_label) + " ") if token_label else ""
     else:
-        symbol = CURRENCY_SYMBOLS.get(currency, "") if currency else ""
+        symbol = CURRENCY_SYMBOLS.get(currency or DEFAULT_CURRENCY, "")
 
     abs_amount = abs(amount)
     neg = amount < 0
@@ -72,9 +77,8 @@ class Entity:
     liabilities_trad: list = field(default_factory=list)
     assets_crypto: list = field(default_factory=list)
     liabilities_crypto: list = field(default_factory=list)
-    currency: Optional[str] = None
+    currency: str = DEFAULT_CURRENCY  # always set, defaults to USD
 
-    # Active world — set by Ledger when loading/switching
     _world: str = field(default="trad", repr=False)
 
     FUNGIBLE_TRAD = {"cash"}
@@ -82,8 +86,7 @@ class Entity:
     @property
     def FUNGIBLE(self):
         if self._world == "crypto":
-            # In crypto world all tokens aggregate (no counterparty tracking on token balances)
-            return None  # handled in add_asset
+            return None
         return self.FUNGIBLE_TRAD
 
     @property
@@ -101,10 +104,10 @@ class Entity:
     # ── asset helpers ────────────────────────────────────────────────────────
 
     def add_asset(self, label: str, amount: float, counterparty=None):
-        lst = self.assets  # uses active world
+        lst = self.assets
         fungible = self.FUNGIBLE
-        # In crypto world: tokens (non-deposit@) always aggregate regardless of counterparty
-        is_fungible = (fungible is None and not label.startswith("deposit@")) or (fungible and label in fungible)
+        is_fungible = (fungible is None and not label.startswith("deposit@")) or \
+                      (fungible is not None and label in fungible)
         for e in lst:
             if e["label"] == label and (is_fungible or e.get("counterparty") == counterparty):
                 e["amount"] += amount
@@ -126,17 +129,34 @@ class Entity:
         entry = next((e for e in self.assets if e["label"] == "cash"), None)
         return entry["amount"] if entry else 0.0
 
+    # Labels whose liabilities track individual counterparties (not aggregated)
+    COUNTERPARTY_LIABILITIES = {"deposit-", "loan-payable", "loan-receivable"}
+
+    def _is_token_liability(self, label: str) -> bool:
+        """Token liabilities aggregate — the issuer tracks total supply, not individual holders."""
+        if label in ("equity", "cash"):
+            return False
+        if any(label.startswith(p) for p in ("deposit-", "deposit@")):
+            return False
+        if label in ("loan-payable", "loan-receivable"):
+            return False
+        return True
+
     # ── liability helpers ────────────────────────────────────────────────────
 
     def add_liability(self, label: str, amount: float, counterparty=None):
         if label == "equity":
             return
         lst = self.liabilities
+        # Token liabilities aggregate regardless of counterparty (total supply model)
+        is_token = self._is_token_liability(label)
         for e in lst:
-            if e["label"] == label and e.get("counterparty") == counterparty:
+            if e["label"] == label and (is_token or e.get("counterparty") == counterparty):
                 e["amount"] += amount
                 return
-        lst.append({"label": label, "amount": amount, "counterparty": counterparty})
+        # Store counterparty only for non-token liabilities
+        cp = None if is_token else counterparty
+        lst.append({"label": label, "amount": amount, "counterparty": cp})
 
     def remove_liability(self, label: str, amount: float) -> bool:
         lst = self.liabilities
@@ -172,6 +192,9 @@ class Ledger:
         self.transactions_trad: list[dict] = []
         self.transactions_crypto: list[dict] = []
         self.world: str = "trad"
+        # token_prices: {token_label: (price_per_token, currency)}
+        # Stablecoin pegs are always applied; this dict holds manual overrides
+        self.token_prices: dict[str, tuple[float, str]] = {}
         self.load()
 
     @property
@@ -183,9 +206,38 @@ class Ledger:
         for e in self.entities.values():
             e._world = world
 
+    def token_fiat_value(self, token: str, quantity: float, entity_currency: str) -> Optional[float]:
+        """
+        Return the fiat value of `quantity` tokens in the entity's currency.
+        Returns None if no price is known.
+        Priority: manual token_prices > stablecoin pegs.
+        """
+        # Manual price override
+        if token in self.token_prices:
+            price, price_currency = self.token_prices[token]
+            if price_currency == entity_currency:
+                return quantity * price
+            # Cross-currency: for now return None (no FX rates)
+            return None
+
+        # Stablecoin peg
+        if token in STABLECOIN_PEGS:
+            peg_price, peg_currency = STABLECOIN_PEGS[token]
+            if peg_currency == entity_currency:
+                return quantity * peg_price
+            return None
+
+        return None
+
+    def set_token_price(self, token: str, price: float, currency: str):
+        """Set or update the fiat price of a token."""
+        self.token_prices[token] = (price, currency)
+        self.save()
+
     def save(self):
         data = {
             "world": self.world,
+            "token_prices": {k: list(v) for k, v in self.token_prices.items()},
             "entities": {
                 name: {
                     "name": e.name,
@@ -207,25 +259,26 @@ class Ledger:
             return
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         self.world = data.get("world", "trad")
+        raw_prices = data.get("token_prices", {})
+        self.token_prices = {k: tuple(v) for k, v in raw_prices.items()}
         for name, ed in data.get("entities", {}).items():
             ent = Entity(name=ed["name"])
-            # Support old state files that used assets/liabilities (trad only)
             ent.assets_trad = ed.get("assets_trad", ed.get("assets", []))
             ent.liabilities_trad = [l for l in ed.get("liabilities_trad", ed.get("liabilities", [])) if l["label"] != "equity"]
             ent.assets_crypto = ed.get("assets_crypto", [])
             ent.liabilities_crypto = [l for l in ed.get("liabilities_crypto", []) if l["label"] != "equity"]
-            ent.currency = ed.get("currency")
+            ent.currency = ed.get("currency", DEFAULT_CURRENCY)
             ent._world = self.world
             self.entities[name] = ent
         self.transactions_trad = data.get("transactions_trad", data.get("transactions", []))
         self.transactions_crypto = data.get("transactions_crypto", [])
 
-    def create(self, name: str, reserves: float):
+    def create(self, name: str, reserves: float, currency: str = DEFAULT_CURRENCY):
         if name in self.entities:
             raise ValueError(f"Entity '{name}' already exists.")
         if self.world == "crypto":
-            raise ValueError("Use 'new' to create entities in crypto world. 'create' is trad-only (requires cash).")
-        e = Entity(name=name)
+            raise ValueError("Use 'new' to create entities in crypto world. 'create' is trad-only.")
+        e = Entity(name=name, currency=currency)
         e._world = self.world
         if reserves > 0:
             e.assets_trad.append({"label": "cash", "amount": reserves, "counterparty": None})
@@ -238,13 +291,9 @@ class Ledger:
             raise ValueError(f"Entity '{name}' not found. Create it first.")
         return self.entities[name]
 
-    # Labels that belong to trad world and should not carry over as tokens
-    TRAD_ONLY_LABELS = {
-        "cash", "equity", "loan-payable", "loan-receivable",
-    }
+    TRAD_ONLY_LABELS = {"cash", "equity", "loan-payable", "loan-receivable"}
 
     def _is_token(self, label: str) -> bool:
-        """True if this label represents an issued token (not trad-world plumbing)."""
         if label in self.TRAD_ONLY_LABELS:
             return False
         if label.startswith("deposit-") or label.startswith("deposit@"):
@@ -252,38 +301,45 @@ class Ledger:
         return True
 
     def _sync_tokens_to_crypto(self):
-        """
-        Mirror issued tokens from trad world onto crypto balance sheets.
-        Called once when first switching to crypto.
-
-        For each entity:
-          - trad liabilities that are tokens → copy to crypto liabilities
-          - trad assets that are tokens     → copy to crypto assets
-        Existing crypto entries are left untouched (additive, no duplicates).
-        """
+        """Mirror issued tokens from trad onto crypto sheets on first worldswitch."""
         for entity in self.entities.values():
-            # Collect existing crypto labels to avoid duplicates
-            existing_liab_labels = {
-                (e["label"], e.get("counterparty")) for e in entity.liabilities_crypto
-            }
-            existing_asset_labels = {
-                (e["label"], e.get("counterparty")) for e in entity.assets_crypto
-            }
+            existing_liab = {(e["label"], e.get("counterparty")) for e in entity.liabilities_crypto}
+            existing_asset = {(e["label"], e.get("counterparty")) for e in entity.assets_crypto}
 
             for entry in entity.liabilities_trad:
                 if self._is_token(entry["label"]):
                     key = (entry["label"], entry.get("counterparty"))
-                    if key not in existing_liab_labels:
+                    if key not in existing_liab:
                         entity.liabilities_crypto.append(dict(entry))
 
             for entry in entity.assets_trad:
                 if self._is_token(entry["label"]):
-                    # Strip counterparty — in crypto world tokens are bearer assets,
-                    # not claims on a specific issuer
+                    # Bearer assets: strip counterparty in crypto world
                     clean = {"label": entry["label"], "amount": entry["amount"], "counterparty": None}
-                    key = (entry["label"], None)
-                    if key not in existing_asset_labels:
+                    if (entry["label"], None) not in existing_asset:
                         entity.assets_crypto.append(clean)
+
+    def _writeback_token_to_trad(self, entity_name: str, token: str, delta: float):
+        """
+        After a crypto token transfer, update the corresponding trad asset entry.
+        delta > 0 = received tokens, delta < 0 = sent tokens.
+        Creates the entry if it doesn't exist yet (receiver getting tokens for the first time).
+        Removes the entry if it reaches zero.
+        """
+        entity = self.get(entity_name)
+        entry = next((e for e in entity.assets_trad if e["label"] == token), None)
+
+        if delta > 0:
+            if entry:
+                entry["amount"] += delta
+            else:
+                # New token asset in trad world — no counterparty (bearer)
+                entity.assets_trad.append({"label": token, "amount": delta, "counterparty": None})
+        else:
+            if entry:
+                entry["amount"] += delta  # delta is negative
+                if entry["amount"] <= 0:
+                    entity.assets_trad.remove(entry)
 
     def switch_world(self) -> str:
         new_world = "crypto" if self.world == "trad" else "trad"
@@ -324,7 +380,10 @@ class Ledger:
         self.save()
 
     def transfer_token(self, sender: str, receiver: str, token: str, amount: float, tx_type: str = "payment"):
-        """Token transfer for crypto world — analogous to transfer_cash."""
+        """
+        Token transfer. Updates crypto sheets and writes back to trad sheets
+        so both worlds stay in sync.
+        """
         s = self.get(sender)
         r = self.get(receiver)
         sender_token = next((e for e in s.assets if e["label"] == token), None)
@@ -335,10 +394,17 @@ class Ledger:
                 f"'{sender}' has insufficient {token}: "
                 f"{sender_token['amount']:,.0f} available, {amount:,.0f} requested."
             )
+
+        # Update crypto sheets
         sender_token["amount"] -= amount
         if sender_token["amount"] == 0:
             s.assets.remove(sender_token)
         r.add_asset(token, amount)
+
+        # Write back to trad sheets
+        self._writeback_token_to_trad(sender, token, -amount)
+        self._writeback_token_to_trad(receiver, token, +amount)
+
         self.record_transaction(sender, receiver, token, amount, tx_type)
         self.save()
 
@@ -346,6 +412,7 @@ class Ledger:
         self.entities = {}
         self.transactions_trad = []
         self.transactions_crypto = []
+        self.token_prices = {}
         self.world = "trad"
         if STATE_FILE.exists():
             STATE_FILE.unlink()

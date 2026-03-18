@@ -1,85 +1,101 @@
 {
   "world": "trad",
+  "token_prices": {},
   "entities": {
-    "EURC": {
-      "name": "EURC",
-      "assets_trad": [
-        {
-          "label": "deposit@bank",
-          "amount": 10.0,
-          "counterparty": "bank"
-        }
-      ],
-      "liabilities_trad": [
-        {
-          "label": "EURC",
-          "amount": 10.0,
-          "counterparty": "bob"
-        }
-      ],
-      "assets_crypto": [],
-      "liabilities_crypto": [
-        {
-          "label": "EURC",
-          "amount": 10.0,
-          "counterparty": "bob"
-        }
-      ],
-      "currency": "EUR"
-    },
-    "bob": {
-      "name": "bob",
-      "assets_trad": [
-        {
-          "label": "EURC",
-          "amount": 10.0,
-          "counterparty": "EURC"
-        }
-      ],
-      "liabilities_trad": [],
-      "assets_crypto": [
-        {
-          "label": "EURC",
-          "amount": 10.0,
-          "counterparty": "EURC"
-        }
-      ],
-      "liabilities_crypto": [],
-      "currency": "EUR"
-    },
     "bank": {
       "name": "bank",
       "assets_trad": [
         {
           "label": "cash",
-          "amount": 20.0,
+          "amount": 120.0,
           "counterparty": null
         }
       ],
       "liabilities_trad": [
         {
-          "label": "deposit-EURC",
-          "amount": 10.0,
-          "counterparty": "EURC"
+          "label": "deposit-circle",
+          "amount": 15.0,
+          "counterparty": "circle"
+        },
+        {
+          "label": "deposit-alice",
+          "amount": 5.0,
+          "counterparty": "alice"
         }
       ],
       "assets_crypto": [],
       "liabilities_crypto": [],
-      "currency": "EUR"
+      "currency": "USD"
+    },
+    "bob": {
+      "name": "bob",
+      "assets_trad": [
+        {
+          "label": "tokenusd",
+          "amount": 15.0,
+          "counterparty": "circle"
+        }
+      ],
+      "liabilities_trad": [],
+      "assets_crypto": [
+        {
+          "label": "tokenusd",
+          "amount": 15.0,
+          "counterparty": null
+        }
+      ],
+      "liabilities_crypto": [],
+      "currency": "USD"
+    },
+    "circle": {
+      "name": "circle",
+      "assets_trad": [
+        {
+          "label": "deposit@bank",
+          "amount": 15.0,
+          "counterparty": "bank"
+        }
+      ],
+      "liabilities_trad": [
+        {
+          "label": "tokenusd",
+          "amount": 10.0,
+          "counterparty": "bob"
+        },
+        {
+          "label": "tokenusd",
+          "amount": 5.0,
+          "counterparty": "alice"
+        }
+      ],
+      "assets_crypto": [],
+      "liabilities_crypto": [
+        {
+          "label": "tokenusd",
+          "amount": 10.0,
+          "counterparty": "bob"
+        },
+        {
+          "label": "tokenusd",
+          "amount": 5.0,
+          "counterparty": "alice"
+        }
+      ],
+      "currency": "USD"
     },
     "alice": {
       "name": "alice",
       "assets_trad": [
         {
-          "label": "cash",
-          "amount": 10.0,
-          "counterparty": null
+          "label": "deposit@bank",
+          "amount": 5.0,
+          "counterparty": "bank"
         }
       ],
       "liabilities_trad": [],
       "assets_crypto": [],
       "liabilities_crypto": [],
-      "currency": null
+      "currency": "USD"
     }
   },
   "transactions_trad": [
@@ -91,12 +107,34 @@
       "type": "deposit"
     },
     {
-      "sender": "EURC",
+      "sender": "circle",
       "receiver": "bob",
-      "instrument": "EURC",
+      "instrument": "tokenusd",
       "amount": 10.0,
+      "type": "issue"
+    },
+    {
+      "sender": "alice",
+      "receiver": "bank",
+      "instrument": "cash",
+      "amount": 10.0,
+      "type": "deposit"
+    },
+    {
+      "sender": "circle",
+      "receiver": "alice",
+      "instrument": "tokenusd",
+      "amount": 5.0,
       "type": "issue"
     }
   ],
-  "transactions_crypto": []
+  "transactions_crypto": [
+    {
+      "sender": "alice",
+      "receiver": "bob",
+      "instrument": "tokenusd",
+      "amount": 5.0,
+      "type": "payment"
+    }
+  ]
 }

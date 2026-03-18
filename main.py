@@ -45,12 +45,16 @@ ledger = Ledger()
 def create(
     entity: str = typer.Argument(..., help="Entity name, e.g. 'stablecoin-issuer'"),
     reserves: float = typer.Argument(..., help="Initial cash/reserves"),
+    currency: str = typer.Option("USD", "--currency", help="Currency: USD (default) or EUR"),
 ):
-    """Create an entity with initial reserves (cash asset, equity is residual)."""
+    """Create an entity with initial reserves. Defaults to USD."""
+    if currency.upper() not in ("USD", "EUR"):
+        console.print(f"[red]Error:[/red] Currency must be USD or EUR.")
+        raise typer.Exit(1)
     try:
-        e = ledger.create(entity, reserves)
+        e = ledger.create(entity, reserves, currency=currency.upper())
         console.print(f"[green]✓[/green] Created [bold yellow]{entity}[/bold yellow] with [bold]{reserves:,.0f}[/bold] reserves")
-        console.print(render_entity(e))
+        console.print(render_entity(e, ledger=ledger))
     except ValueError as ex:
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
@@ -82,7 +86,7 @@ def new(
         if currency and currency.upper() not in ("USD", "EUR"):
             raise ValueError(f"Currency must be USD or EUR, got '{currency}'.")
         ent = Entity(name=entity)
-        ent.currency = currency.upper() if currency else None
+        ent.currency = currency.upper() if currency else "USD"
         ledger.entities[entity] = ent
         ledger.save()
         cur_note = f" [dim]({currency.upper()})[/dim]" if currency else ""
@@ -142,7 +146,7 @@ def entry(
     )
 
     if show:
-        console.print(render_entity(e))
+        console.print(render_entity(e, ledger=ledger))
 
     if export_md:
         path = export(ledger, append=True)
@@ -193,12 +197,16 @@ def issue(
     ledger.record_transaction(entity, to, token, amount, "issue")
     ledger.save()
 
+    # Build confirmation: "issued 10 tokenusd ($10)" where fiat value is shown if known
+    fv = ledger.token_fiat_value(token, amount, issuer.currency)
+    sym = "$" if issuer.currency == "USD" else "€"
+    fv_note = f" [dim]({sym}{fv:,.0f})[/dim]" if fv is not None else ""
     console.print(
         f"[green]✓[/green] [bold yellow]{entity}[/bold yellow] issued "
-        f"[bold]{issuer.fmt(amount)}[/bold] [cyan]{token}[/cyan] → [bold yellow]{to}[/bold yellow]"
+        f"[bold]{amount:,.0f}[/bold] [cyan]{token}[/cyan]{fv_note} → [bold yellow]{to}[/bold yellow]"
     )
-    console.print(render_entity(issuer))
-    console.print(render_entity(receiver))
+    console.print(render_entity(issuer, ledger=ledger))
+    console.print(render_entity(receiver, ledger=ledger))
 
 
 # ── PAY ──────────────────────────────────────────────────────────────────────
@@ -305,9 +313,9 @@ def pay(
                 f"[bold]{amount:,.0f}[/bold] → [bold yellow]{receiver}[/bold yellow] "
                 f"[dim](settled at {intrabank}, no cash moved)[/dim]"
             )
-            console.print(render_entity(s))
-            console.print(render_entity(r))
-            console.print(render_entity(bank_entity))
+            console.print(render_entity(s, ledger=ledger))
+            console.print(render_entity(r, ledger=ledger))
+            console.print(render_entity(bank_entity, ledger=ledger))
         else:
             try:
                 ledger.transfer_cash(sender, receiver, amount, tx_type="payment")
@@ -402,8 +410,8 @@ def deposit(
             f"[green]✓[/green] Opened empty deposit account for [bold yellow]{from_}[/bold yellow] "
             f"at [bold yellow]{bank}[/bold yellow]"
         )
-    console.print(render_entity(depositor))
-    console.print(render_entity(b))
+    console.print(render_entity(depositor, ledger=ledger))
+    console.print(render_entity(b, ledger=ledger))
 
 
 # ── WITHDRAW ─────────────────────────────────────────────────────────────────
@@ -474,8 +482,8 @@ def withdraw(
         f"[green]✓[/green] [bold yellow]{to}[/bold yellow] withdrew "
         f"[bold]{amount:,.0f}[/bold] cash from [bold yellow]{bank}[/bold yellow]"
     )
-    console.print(render_entity(withdrawer))
-    console.print(render_entity(b))
+    console.print(render_entity(withdrawer, ledger=ledger))
+    console.print(render_entity(b, ledger=ledger))
 
 
 # ── BORROW ───────────────────────────────────────────────────────────────────
@@ -525,8 +533,8 @@ def borrow(
         f"[dim]— deposit created, no cash moved. Use 'withdraw {from_} {amount} --to {entity}' to draw cash.[/dim]"
     )
 
-    console.print(render_entity(borrower))
-    console.print(render_entity(lender))
+    console.print(render_entity(borrower, ledger=ledger))
+    console.print(render_entity(lender, ledger=ledger))
 
 
 # ── BALANCESHEETS ─────────────────────────────────────────────────────────────
@@ -566,6 +574,35 @@ def reset(
         return
     ledger.reset()
     console.print("[red]✓ Reset complete.[/red]")
+
+
+# ── PRICE ────────────────────────────────────────────────────────────────────
+
+@app.command()
+def price(
+    token: str = typer.Argument(..., help="Token name, e.g. 'tokeneth'"),
+    amount: float = typer.Argument(..., help="Fiat value per token"),
+    currency: str = typer.Option("USD", "--currency", help="Currency of the price (USD or EUR)"),
+):
+    """
+    Set the fiat price of a token for trad world display.
+
+    Stablecoins (tokenusd, tokeneur) are pegged automatically and don't
+    need this command. Use it for other tokens like tokeneth or tokenbtc.
+
+    Examples:
+      price tokeneth 2000          (1 tokeneth = $2000)
+      price tokenbtc 50000         (1 tokenbtc = $50,000)
+      price tokeneth 1850 --currency EUR
+    """
+    if currency.upper() not in ("USD", "EUR"):
+        console.print(f"[red]Error:[/red] Currency must be USD or EUR.")
+        raise typer.Exit(1)
+    ledger.set_token_price(token, amount, currency.upper())
+    sym = "$" if currency.upper() == "USD" else "€"
+    console.print(
+        f"[green]✓[/green] [cyan]{token}[/cyan] = [bold]{sym}{amount:,.0f}[/bold] per token"
+    )
 
 
 # ── WORLDSWITCH ───────────────────────────────────────────────────────────────

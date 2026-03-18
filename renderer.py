@@ -40,20 +40,40 @@ def world_banner(world: str) -> str:
     return "🏦 [bold yellow]TRAD WORLD[/bold yellow] — cash & deposits"
 
 
+# Labels that are fiat-denominated in trad world (use currency symbol)
+_FIAT_LABELS = {"cash"}
+
+
+def _is_token_entry(label: str) -> bool:
+    """True if this label is a token (not cash/deposit/loan plumbing)."""
+    if label in _FIAT_LABELS:
+        return False
+    if label.startswith("deposit@") or label.startswith("deposit-"):
+        return False
+    if label in ("loan-payable", "loan-receivable", "equity"):
+        return False
+    return True
+
+
 def _fmt_entry(entity: Entity, entry: dict) -> str:
-    """Format a single entry's amount, injecting token emoji in crypto world."""
+    """Format a single entry amount.
+    - Trad world, fiat entries (cash, deposits): currency symbol + amount
+    - Trad world, token entries: plain quantity (fiat value shown separately in parentheses)
+    - Crypto world: token emoji + amount
+    """
     label = entry["label"]
     amount = entry["amount"]
     if entity._world == "crypto":
-        # detect token name: strip deposit@ prefix for display
         tok = label.replace("deposit@", "").replace("deposit-", "")
-        formatted = entity.fmt(amount, label=tok)
+        return entity.fmt(amount, label=tok)
     else:
-        formatted = entity.fmt(amount)
-    return formatted
+        if _is_token_entry(label):
+            # Plain quantity — no currency symbol; fiat value added separately
+            return f"{amount:,.0f}"
+        return entity.fmt(amount)
 
 
-def render_entity(entity: Entity) -> Panel:
+def render_entity(entity: Entity, ledger=None) -> Panel:
     s = WORLD_STYLES[entity._world]
     f = entity.fmt
 
@@ -79,11 +99,22 @@ def render_entity(entity: Entity) -> Panel:
             a_cell = f"{a['label']}  [bold]{_fmt_entry(entity, a)}[/bold]"
             if a.get("counterparty"):
                 a_cell += f" [dim]← {a['counterparty']}[/dim]"
+            # In trad world, show fiat value next to token quantities
+            if entity._world == "trad" and ledger and a["label"] not in ("cash",) and not a["label"].startswith("deposit"):
+                fv = ledger.token_fiat_value(a["label"], a["amount"], entity.currency)
+                if fv is not None:
+                    sym = "$" if entity.currency == "USD" else "€"
+                    a_cell += f" [dim green]({sym}{fv:,.0f})[/dim green]"
         if i < len(liabs):
             l = liabs[i]
             l_cell = f"{l['label']}  [bold]{_fmt_entry(entity, l)}[/bold]"
             if l.get("counterparty"):
                 l_cell += f" [dim]→ {l['counterparty']}[/dim]"
+            if entity._world == "trad" and ledger and not l["label"].startswith("deposit") and l["label"] not in ("loan-payable", "loan-receivable", "equity"):
+                fv = ledger.token_fiat_value(l["label"], l["amount"], entity.currency)
+                if fv is not None:
+                    sym = "$" if entity.currency == "USD" else "€"
+                    l_cell += f" [dim red]({sym}{fv:,.0f})[/dim red]"
         table.add_row(a_cell, l_cell)
 
     table.add_row("─" * 20, "─" * 20)
@@ -155,7 +186,7 @@ def render_all(ledger: Ledger):
             return
     else:
         visible = list(ledger.entities.values())
-    panels = [render_entity(e) for e in visible]
+    panels = [render_entity(e, ledger=ledger) for e in visible]
     console.print(Columns(panels, equal=True, expand=True))
 
 
