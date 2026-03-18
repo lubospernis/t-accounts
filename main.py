@@ -194,8 +194,7 @@ def issue(
     # Receiver: token is an asset (holds a claim on the issuer)
     receiver.add_asset(token, amount, counterparty=entity)
 
-    ledger.record_transaction(entity, to, token, amount, "issue")
-    ledger.save()
+    ledger.save()  # issue is not a payment — no graph entry
 
     # Build confirmation: "issued 10 tokenusd ($10)" where fiat value is shown if known
     fv = ledger.token_fiat_value(token, amount, issuer.currency)
@@ -309,7 +308,7 @@ def redeem(
 
     # ── Settlement — intrabank or cash ────────────────────────────────────────
     try:
-        path = ledger.settle(to, redeemer, amount, tx_type="redeem")
+        path = ledger.settle(to, redeemer, amount, tx_type="redeem", is_payment=False)
     except ValueError as ex:
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
@@ -462,7 +461,7 @@ def deposit(
     if amount > 0:
         # Cash moves — validated and recorded in graph
         try:
-            ledger.transfer_cash(from_, bank, amount, tx_type="deposit")
+            ledger.transfer_cash(from_, bank, amount, tx_type="deposit", record=False)
         except ValueError as ex:
             console.print(f"[red]Error:[/red] {ex}")
             raise typer.Exit(1)
@@ -541,7 +540,7 @@ def withdraw(
 
     # Cash moves from bank to withdrawer (validates bank cash + records in graph)
     try:
-        ledger.transfer_cash(bank, to, amount, tx_type="withdrawal")
+        ledger.transfer_cash(bank, to, amount, tx_type="withdrawal", record=False)
     except ValueError as ex:
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)

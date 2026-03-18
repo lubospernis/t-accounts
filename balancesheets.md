@@ -101,3 +101,50 @@ bob --[cash 10]--> bank
 ```
 
 ---
+
+## Balance Sheets — 2026-03-18 17:53:26
+
+### bank (USD)
+
+| Assets | Liabilities & Equity |
+|--------|----------------------|
+| cash $120 | deposit-circle $5 → circle |
+|  | deposit-alice $15 → alice |
+|  | ***equity +$100*** *(= A − L)* |
+| **TOTAL $120** | **TOTAL $120** ✓ |
+
+### bob (USD)
+
+| Assets | Liabilities & Equity |
+|--------|----------------------|
+|  |  |
+|  | ***equity +$0*** *(= A − L)* |
+| **TOTAL $0** | **TOTAL $0** ✓ |
+
+### circle (USD)
+
+| Assets | Liabilities & Equity |
+|--------|----------------------|
+| deposit@bank $5 ← bank | tokenusd $5 |
+|  | ***equity +$0*** *(= A − L)* |
+| **TOTAL $5** | **TOTAL $5** ✓ |
+
+### alice (USD)
+
+| Assets | Liabilities & Equity |
+|--------|----------------------|
+| deposit@bank $15 ← bank |  |
+| tokenusd $5 ← circle |  |
+|  | ***equity +$20*** *(= A − L)* |
+| **TOTAL $20** | **TOTAL $20** ✓ |
+
+### Payment Flow
+
+```
+bob --[cash 10]--> bank
+circle --[tokenusd 10]--> bob
+circle --[tokenusd 5]--> alice
+alice --[cash 10]--> bank
+```
+
+---

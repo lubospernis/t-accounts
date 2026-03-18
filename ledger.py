@@ -359,10 +359,13 @@ class Ledger:
         })
         self.save()
 
-    def settle(self, sender: str, receiver: str, amount: float, tx_type: str = "payment") -> str:
+    def settle(self, sender: str, receiver: str, amount: float,
+               tx_type: str = "payment", is_payment: bool = True) -> str:
         """
         Trad world settlement: intrabank deposit swap or direct cash transfer.
         Returns "intrabank" or "cash" to indicate which path was used.
+        is_payment=True records the flow in the graph (genuine payments only).
+        is_payment=False for operational flows: deposits, withdrawals, redemptions.
         Raises ValueError on any validation failure.
         """
         if self.world == "crypto":
@@ -403,10 +406,17 @@ class Ledger:
             self.save()
             return "intrabank"
         else:
-            self.transfer_cash(sender, receiver, amount, tx_type=tx_type)
+            self.transfer_cash(sender, receiver, amount, tx_type=tx_type, record=is_payment)
             return "cash"
 
-    def transfer_cash(self, sender: str, receiver: str, amount: float, tx_type: str = "payment"):
+    def transfer_cash(self, sender: str, receiver: str, amount: float,
+                       tx_type: str = "payment", record: bool = True):
+        """
+        Move cash between two entities.
+        record=True only for genuine payments (direct cash between parties).
+        record=False for operational flows: deposits, withdrawals, redemptions —
+        these are balance sheet restructurings, not payments.
+        """
         if self.world == "crypto":
             raise ValueError("No cash in crypto world. Use tokens to pay.")
         s = self.get(sender)
@@ -423,7 +433,8 @@ class Ledger:
         if sender_cash["amount"] == 0:
             s.assets.remove(sender_cash)
         r.add_asset("cash", amount)
-        self.record_transaction(sender, receiver, "cash", amount, tx_type)
+        if record:
+            self.record_transaction(sender, receiver, "cash", amount, tx_type)
         self.save()
 
     def transfer_token(self, sender: str, receiver: str, token: str, amount: float, tx_type: str = "payment"):
