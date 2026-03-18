@@ -14,12 +14,12 @@
       "liabilities_trad": [
         {
           "label": "deposit-circle",
-          "amount": 15.0,
+          "amount": 5.0,
           "counterparty": "circle"
         },
         {
           "label": "deposit-alice",
-          "amount": 5.0,
+          "amount": 15.0,
           "counterparty": "alice"
         }
       ],
@@ -29,10 +29,49 @@
     },
     "bob": {
       "name": "bob",
+      "assets_trad": [],
+      "liabilities_trad": [],
+      "assets_crypto": [],
+      "liabilities_crypto": [],
+      "currency": "USD"
+    },
+    "circle": {
+      "name": "circle",
       "assets_trad": [
+        {
+          "label": "deposit@bank",
+          "amount": 5.0,
+          "counterparty": "bank"
+        }
+      ],
+      "liabilities_trad": [
+        {
+          "label": "tokenusd",
+          "amount": 5.0,
+          "counterparty": null
+        }
+      ],
+      "assets_crypto": [],
+      "liabilities_crypto": [
         {
           "label": "tokenusd",
           "amount": 15.0,
+          "counterparty": null
+        }
+      ],
+      "currency": "USD"
+    },
+    "alice": {
+      "name": "alice",
+      "assets_trad": [
+        {
+          "label": "deposit@bank",
+          "amount": 15.0,
+          "counterparty": "bank"
+        },
+        {
+          "label": "tokenusd",
+          "amount": 5.0,
           "counterparty": "circle"
         }
       ],
@@ -44,56 +83,6 @@
           "counterparty": null
         }
       ],
-      "liabilities_crypto": [],
-      "currency": "USD"
-    },
-    "circle": {
-      "name": "circle",
-      "assets_trad": [
-        {
-          "label": "deposit@bank",
-          "amount": 15.0,
-          "counterparty": "bank"
-        }
-      ],
-      "liabilities_trad": [
-        {
-          "label": "tokenusd",
-          "amount": 10.0,
-          "counterparty": "bob"
-        },
-        {
-          "label": "tokenusd",
-          "amount": 5.0,
-          "counterparty": "alice"
-        }
-      ],
-      "assets_crypto": [],
-      "liabilities_crypto": [
-        {
-          "label": "tokenusd",
-          "amount": 10.0,
-          "counterparty": "bob"
-        },
-        {
-          "label": "tokenusd",
-          "amount": 5.0,
-          "counterparty": "alice"
-        }
-      ],
-      "currency": "USD"
-    },
-    "alice": {
-      "name": "alice",
-      "assets_trad": [
-        {
-          "label": "deposit@bank",
-          "amount": 5.0,
-          "counterparty": "bank"
-        }
-      ],
-      "liabilities_trad": [],
-      "assets_crypto": [],
       "liabilities_crypto": [],
       "currency": "USD"
     }
@@ -130,10 +119,10 @@
   ],
   "transactions_crypto": [
     {
-      "sender": "alice",
-      "receiver": "bob",
+      "sender": "bob",
+      "receiver": "alice",
       "instrument": "tokenusd",
-      "amount": 5.0,
+      "amount": 10.0,
       "type": "payment"
     }
   ]

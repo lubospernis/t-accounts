@@ -314,3 +314,39 @@ git commit -m "scenario: <step description>"
 - Add FX rates between USD and EUR for cross-currency token valuation
 - Add `scenario` — replay a sequence of steps from a `.txt` file
 - Use `Textual` for an interactive TUI with live-updating T-accounts
+
+--- 
+
+## Example
+
+```bash
+
+
+taccounts create bank 100
+taccounts create bob 10
+taccounts new circle --currency USD
+
+
+taccounts deposit bank 10 --from bob
+taccounts deposit bank --from circle
+taccounts pay bob circle 10
+
+
+taccounts issue circle tokenusd 10 --to bob
+taccounts balancesheets show
+
+taccounts create alice 10
+taccounts deposit bank 10 --from alice
+taccounts pay alice circle 5
+taccounts issue circle tokenusd 5 --to alice
+
+taccounts worldswitch
+taccounts pay bob alice 10
+
+taccounts worldswitch
+
+taccounts redeem alice tokenusd 10 --to circle
+
+taccounts balancesheets show
+taccounts balancesheets export
+```

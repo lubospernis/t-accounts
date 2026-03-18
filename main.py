@@ -273,13 +273,26 @@ def redeem(
         )
         raise typer.Exit(1)
 
-    # Validate issuer has enough cash to pay out
+    # Validate issuer can pay — either cash or a shared deposit account
     issuer_cash = next((e for e in issuer.assets if e["label"] == "cash"), None)
-    if issuer_cash is None or issuer_cash["amount"] < amount:
-        avail = issuer_cash["amount"] if issuer_cash else 0
+    issuer_deposits = {
+        e["label"].removeprefix("deposit@"): e
+        for e in issuer.assets if e["label"].startswith("deposit@")
+    }
+    redeemer_deposits = {
+        e["label"].removeprefix("deposit@"): e
+        for e in red.assets if e["label"].startswith("deposit@")
+    }
+    shared_banks = set(issuer_deposits) & set(redeemer_deposits)
+    can_intrabank = any(issuer_deposits[b]["amount"] >= amount for b in shared_banks)
+    can_cash = issuer_cash is not None and issuer_cash["amount"] >= amount
+
+    if not can_intrabank and not can_cash:
+        avail_cash = issuer_cash["amount"] if issuer_cash else 0
         console.print(
-            f"[red]Error:[/red] [bold yellow]{to}[/bold yellow] has insufficient cash: "
-            f"[bold]{avail:,.0f}[/bold] available, [bold]{amount:,.0f}[/bold] needed."
+            f"[red]Error:[/red] [bold yellow]{to}[/bold yellow] cannot settle "
+            f"[bold]{amount:,.0f}[/bold]: no shared deposit account with [bold yellow]{redeemer}[/bold yellow] "
+            f"and only [bold]{avail_cash:,.0f}[/bold] cash available."
         )
         raise typer.Exit(1)
 
@@ -294,10 +307,9 @@ def redeem(
     if liab_entry["amount"] == 0:
         issuer.liabilities.remove(liab_entry)
 
-    # ── Cash settlement ───────────────────────────────────────────────────────
-    # Uses transfer_cash so the payment is recorded in the graph
+    # ── Settlement — intrabank or cash ────────────────────────────────────────
     try:
-        ledger.transfer_cash(to, redeemer, amount, tx_type="redeem")
+        path = ledger.settle(to, redeemer, amount, tx_type="redeem")
     except ValueError as ex:
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
@@ -305,10 +317,11 @@ def redeem(
     fv = ledger.token_fiat_value(token, amount, issuer.currency)
     sym = "$" if issuer.currency == "USD" else "€"
     fv_note = f" [dim]({sym}{fv:,.0f})[/dim]" if fv is not None else ""
+    path_note = f" [dim](settled at shared bank)[/dim]" if path == "intrabank" else ""
     console.print(
         f"[green]✓[/green] [bold yellow]{redeemer}[/bold yellow] redeemed "
         f"[bold]{amount:,.0f}[/bold] [cyan]{token}[/cyan]{fv_note} → "
-        f"[bold]{sym}{amount:,.0f}[/bold] cash from [bold yellow]{to}[/bold yellow]"
+        f"[bold]{sym}{amount:,.0f}[/bold] from [bold yellow]{to}[/bold yellow]{path_note}"
     )
     console.print(render_entity(red, ledger=ledger))
     console.print(render_entity(issuer, ledger=ledger))
@@ -378,61 +391,26 @@ def pay(
         console.print(render_entity(ledger.get(receiver)))
 
     else:
-        # ── Trad world: cash or intrabank ─────────────────────────────────────
-        sender_deposits = {
-            e["label"].removeprefix("deposit@"): e
-            for e in s.assets if e["label"].startswith("deposit@")
-        }
-        receiver_deposits = {
-            e["label"].removeprefix("deposit@"): e
-            for e in r.assets if e["label"].startswith("deposit@")
-        }
-        shared = set(sender_deposits) & set(receiver_deposits)
-        intrabank = next(
-            (bank for bank in shared if sender_deposits[bank]["amount"] >= amount),
-            None
-        )
+        # ── Trad world: intrabank or cash via settle() ────────────────────────
+        try:
+            path = ledger.settle(sender, receiver, amount, tx_type="payment")
+        except ValueError as ex:
+            console.print(f"[red]Error:[/red] {ex}")
+            raise typer.Exit(1)
 
-        if intrabank:
-            try:
-                bank_entity = ledger.get(intrabank)
-            except ValueError as ex:
-                console.print(f"[red]Error:[/red] {ex}")
-                raise typer.Exit(1)
-            sd = sender_deposits[intrabank]
-            sd["amount"] -= amount
-            if sd["amount"] == 0:
-                s.assets.remove(sd)
-            receiver_deposits[intrabank]["amount"] += amount
-            dep_sender = next((e for e in bank_entity.liabilities if e["label"] == f"deposit-{sender}"), None)
-            dep_receiver = next((e for e in bank_entity.liabilities if e["label"] == f"deposit-{receiver}"), None)
-            if dep_sender:
-                dep_sender["amount"] -= amount
-                if dep_sender["amount"] == 0:
-                    bank_entity.liabilities.remove(dep_sender)
-            if dep_receiver:
-                dep_receiver["amount"] += amount
-            ledger.save()
+        if path == "intrabank":
             console.print(
                 f"[green]✓[/green] [bold yellow]{sender}[/bold yellow] paid "
                 f"[bold]{amount:,.0f}[/bold] → [bold yellow]{receiver}[/bold yellow] "
-                f"[dim](settled at {intrabank}, no cash moved)[/dim]"
+                f"[dim](settled intrabank, no cash moved)[/dim]"
             )
-            console.print(render_entity(s, ledger=ledger))
-            console.print(render_entity(r, ledger=ledger))
-            console.print(render_entity(bank_entity, ledger=ledger))
         else:
-            try:
-                ledger.transfer_cash(sender, receiver, amount, tx_type="payment")
-            except ValueError as ex:
-                console.print(f"[red]Error:[/red] {ex}")
-                raise typer.Exit(1)
             console.print(
                 f"[green]✓[/green] [bold yellow]{sender}[/bold yellow] paid "
                 f"[bold]{amount:,.0f}[/bold] cash → [bold yellow]{receiver}[/bold yellow]"
             )
-            console.print(render_entity(ledger.get(sender)))
-            console.print(render_entity(ledger.get(receiver)))
+        console.print(render_entity(ledger.get(sender), ledger=ledger))
+        console.print(render_entity(ledger.get(receiver), ledger=ledger))
 
 
 # ── DEPOSIT ──────────────────────────────────────────────────────────────────

@@ -359,6 +359,53 @@ class Ledger:
         })
         self.save()
 
+    def settle(self, sender: str, receiver: str, amount: float, tx_type: str = "payment") -> str:
+        """
+        Trad world settlement: intrabank deposit swap or direct cash transfer.
+        Returns "intrabank" or "cash" to indicate which path was used.
+        Raises ValueError on any validation failure.
+        """
+        if self.world == "crypto":
+            raise ValueError("settle() is for trad world only.")
+        s = self.get(sender)
+        r = self.get(receiver)
+
+        # Check for shared deposit institution
+        sender_deposits = {
+            e["label"].removeprefix("deposit@"): e
+            for e in s.assets_trad if e["label"].startswith("deposit@")
+        }
+        receiver_deposits = {
+            e["label"].removeprefix("deposit@"): e
+            for e in r.assets_trad if e["label"].startswith("deposit@")
+        }
+        shared = set(sender_deposits) & set(receiver_deposits)
+        intrabank = next(
+            (bank for bank in shared if sender_deposits[bank]["amount"] >= amount),
+            None
+        )
+
+        if intrabank:
+            bank_entity = self.get(intrabank)
+            sd = sender_deposits[intrabank]
+            sd["amount"] -= amount
+            if sd["amount"] == 0:
+                s.assets_trad.remove(sd)
+            receiver_deposits[intrabank]["amount"] += amount
+            dep_sender = next((e for e in bank_entity.liabilities_trad if e["label"] == f"deposit-{sender}"), None)
+            dep_receiver = next((e for e in bank_entity.liabilities_trad if e["label"] == f"deposit-{receiver}"), None)
+            if dep_sender:
+                dep_sender["amount"] -= amount
+                if dep_sender["amount"] == 0:
+                    bank_entity.liabilities_trad.remove(dep_sender)
+            if dep_receiver:
+                dep_receiver["amount"] += amount
+            self.save()
+            return "intrabank"
+        else:
+            self.transfer_cash(sender, receiver, amount, tx_type=tx_type)
+            return "cash"
+
     def transfer_cash(self, sender: str, receiver: str, amount: float, tx_type: str = "payment"):
         if self.world == "crypto":
             raise ValueError("No cash in crypto world. Use tokens to pay.")
