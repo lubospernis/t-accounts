@@ -26,16 +26,17 @@ function taccounts { python "C:\path\to\t-accounts\main.py" @args }
 
 | Command | Description |
 |---------|-------------|
-| `new <entity> [--currency EUR]` | Create a blank balance sheet (defaults to USD) |
+| `new <entity> [--currency EUR] [--address]` | Create a blank balance sheet |
 | `entry <entity> asset\|liability <label> <amount>` | Freely add any asset or liability |
-| `create <entity> <reserves> [--currency EUR]` | Create entity with initial cash (defaults to USD) |
-| `issue <entity> <token> <amount> --to <receiver>` | Issue a token — liability on issuer, asset on receiver |
-| `redeem <redeemer> <token> <amount> --to <issuer>` | Burn tokens and receive cash (trad world only) |
-| `pay <sender> <receiver> <amount> [--token <n>]` | Payment — intrabank, cash, or token (crypto) |
-| `deposit <bank> <amount> --from <depositor>` | Deposit cash into a bank (0 = open empty account) |
+| `create <entity> <reserves> [--currency EUR] [--address]` | Create entity with initial cash |
+| `issue <entity> <token> <amount> --to <receiver>` | Issue a token |
+| `redeem <redeemer> <token> <amount> --to <issuer>` | Burn tokens and receive settlement |
+| `pay <sender> <receiver> <amount> [--token <n>]` | Payment — intrabank, cash, or token |
+| `deposit <bank> <amount> --from <depositor>` | Deposit cash (0 = open empty account) |
 | `withdraw <bank> <amount> --to <withdrawer>` | Withdraw cash from a bank |
 | `borrow <entity> <amount> --from <lender>` | Create a loan (no cash moves) |
-| `price <token> <amount> [--currency EUR]` | Set fiat price per token for trad world display |
+| `price <token> <amount> [--currency EUR]` | Set fiat price per token |
+| `fxrate <pair> <rate>` | Set FX rate (e.g. `fxrate EURUSD 1.08`) |
 | `worldswitch` | Toggle between trad and crypto world |
 | `balancesheets show` | Display all T-accounts |
 | `balancesheets export` | Write to `balancesheets.md` |
@@ -46,307 +47,191 @@ function taccounts { python "C:\path\to\t-accounts\main.py" @args }
 
 ## Core Design Principles
 
-**Equity is always computed, never stored.** `Assets = Liabilities + Equity` by construction. Equity is the residual, shown in magenta.
+**Equity is always computed.** `Assets = Liabilities + Equity` by construction. Equity is the residual, shown in magenta.
 
-**Currency defaults to USD.** Every entity has a currency (`USD` or `EUR`). `create` and `new` both default to USD. Set EUR with `--currency EUR` at creation time only.
+**Currency defaults to USD.** Every entity has a currency (`USD` or `EUR`). Set EUR with `--currency EUR` at creation time only.
 
-**The payment graph tracks cash flows only (trad) or token flows only (crypto).** Every arrow is a real settlement. Intrabank settlements and bank lending do not appear.
+**Address = crypto presence.** An entity only appears in crypto world if it has a wallet address. Assign one with `--address` at creation. Without an address, the entity is trad-only — invisible on-chain.
 
-**All cash movements go through one function.** `transfer_cash()` validates, updates both balance sheets, and records the flow.
+**The payment graph is strict.** Only direct cash transfers between parties (`pay` with no shared bank) and on-chain token transfers appear. Deposits, withdrawals, issuances, redemptions, and intrabank settlements do not — they are balance sheet restructurings, not payments.
 
-**Crypto write-back.** Token transfers in crypto world automatically update trad balance sheets too. Both worlds stay in sync at all times.
+**Crypto write-back.** Token transfers in crypto world update trad balance sheets automatically.
 
-**Token liabilities aggregate on the issuer.** The issuer tracks total supply outstanding, not individual holders. Holders track which issuer their token came from.
+**Token liabilities aggregate on the issuer.** The issuer tracks total supply, not individual holders.
 
-**Two worlds, two graphs, one entity set.** All entities exist in both worlds with separate balance sheet entries and separate payment graphs.
-
----
-
-## Currency & Amount Formatting
-
-| Amount | USD display | EUR display |
-|--------|-------------|-------------|
-| 500 | `$500` | `€500` |
-| 12,500 | `$12,500` | `€12,500` |
-| 3,000,000 | `$3M` | `€3M` |
-| 2,500,000,000 | `$2.5B` | `€2.5B` |
-
-Equity always shows an explicit sign: `+$2.5B` or `-€100`.
+**Redemption requires currency match.** A EUR-denominated entity cannot redeem a USD-pegged token at a USD issuer.
 
 ---
 
-## Token Prices in Trad World
+## Currency, FX & Token Prices
 
-Tokens show both quantity and fiat value on trad balance sheets:
+All entities default to USD. EUR entities holding USD-pegged tokens need an FX rate to show values in EUR.
 
-```
-tokenusd  10 ← circle ($10)     ← stablecoin: 1:1 automatic
-tokeneth   2 ← circle ($4,000)  ← manual price set via `price` command
-```
-
-**Automatic stablecoin pegs:**
-- `tokenusd` = 1 USD per token
-- `tokeneur` = 1 EUR per token
-
-**Manual prices for other tokens:**
 ```bash
-python main.py price tokeneth 2000          # 1 tokeneth = $2,000
-python main.py price tokenbtc 50000         # 1 tokenbtc = $50,000
+python main.py fxrate EURUSD 1.08     # 1 EUR = 1.08 USD
+
+python main.py price tokeneth 2000    # 1 tokeneth = $2,000
 python main.py price tokeneth 1850 --currency EUR
 ```
+
+**Automatic stablecoin pegs:** `tokenusd` = 1 USD, `tokeneur` = 1 EUR.
+
+Trad balance sheets show token quantity + fiat value:
+```
+tokenusd  10 ← circle ($10)      ← USD entity, direct peg
+tokenusd  10 ← circle (€9)       ← EUR entity, converted via EURUSD rate
+```
+
+---
+
+## Wallet Addresses
+
+An address is a short random hex string (`0x3f7a1c2b`) assigned at creation. It:
+- Makes the entity visible in crypto world
+- Appears in the panel title in crypto world
+- Enables trad balance sheet write-back from crypto transfers
+- Is required to appear in the crypto payment graph
+
+```bash
+python main.py create circle 100 --address       # 0x1bb18e0e
+python main.py new charlie --currency EUR --address  # 0xd6f2b126
+python main.py new bank                          # no address — trad only
+```
+
+In crypto world:
+```
+╭── alice ⛓ 0x5871065b ──╮    ╭── charlie ⛓ 0xd6f2b126 ──╮
+│  tokenusd  💵 15       │    │  tokenusd  💵 15          │
+│  tokenusd 💵  net +15  │    │  tokenusd 💵  net +15     │
+╰────────────────────────╯    ╰───────────────────────────╯
+```
+`bank` (no address) is invisible.
 
 ---
 
 ## Building Balance Sheets
 
 ```bash
-# Generic — full control
-python main.py new fed --currency USD
-python main.py entry fed asset cash 500
-python main.py entry fed asset bonds 12500
-python main.py entry fed liability deposits 1000000
+# With crypto address
+python main.py create circle 100 --address
+python main.py new charlie --currency EUR --address
 
-# Shortcut — cash asset, equity is residual
-python main.py create bank 100              # USD by default
-python main.py create ecb 100 --currency EUR
+# Without — trad only
+python main.py new bank
+python main.py create ecb 1000 --currency EUR
 ```
 
-`entry` options:
-- `--cp <n>` — tag a counterparty
-- `--no-show` — suppress T-account print
-- `--export` — write to `balancesheets.md` immediately
-
----
-
-## Cash Payments (Trad World)
-
-`pay` detects the settlement path automatically:
-
-**Intrabank** — both hold deposits at the same bank, not in graph:
-```bash
-python main.py pay alice bob 20
-# deposit balances swap at the bank, no cash moves
-```
-
-**Cash** — fallback, recorded in graph:
-```bash
-python main.py pay alice bob 20
-```
-
----
-
-## Deposits, Withdrawals, Borrowing
-
-```bash
-# Open empty account first (no cash moves)
-python main.py deposit bank --from alice
-
-# Deposit cash
-python main.py deposit bank 50 --from alice
-
-# Withdraw
-python main.py withdraw bank 20 --to alice
-
-# Borrow (credit only — no cash moves, not in graph)
-python main.py borrow startup 50 --from bank
-# Draw cash separately:
-python main.py withdraw bank 50 --to startup
-```
+`entry` options: `--cp <n>`, `--no-show`, `--export`
 
 ---
 
 ## Token Issuance and Redemption
 
-### Issue
-
 ```bash
+# Issue
 python main.py issue circle tokenusd 10 --to alice
+# circle: tokenusd liability ↑ 10 (total supply, no holder breakdown)
+# alice:  tokenusd asset ↑ 10 ← circle
+
+# Redeem (trad world only, currency must match)
+python main.py redeem alice tokenusd 5 --to circle   # ✓ both USD
+python main.py redeem charlie tokenusd 5 --to circle # ✗ charlie is EUR
 ```
 
-- Circle: `tokenusd liability ↑ 10` (total supply grows, no per-holder breakdown)
-- Alice: `tokenusd asset ↑ 10 ← circle` (knows her issuer)
-
-### Redeem (trad world only)
-
-```bash
-python main.py redeem alice tokenusd 10 --to circle
-```
-
-Two things happen simultaneously:
-
-**Burn:**
-- Alice: `tokenusd asset ↓ 10`
-- Circle: `tokenusd liability ↓ 10` (supply shrinks)
-
-**Cash settlement:**
-- Circle: `cash ↓ 10`
-- Alice: `cash ↑ 10`
-
-Circle's balance sheet shrinks on both sides equally. Alice does a pure asset swap — equity unchanged. Circle must have enough cash to honour the redemption; if it lent out reserves it cannot redeem. This is the stablecoin reserve adequacy lesson.
-
-Three validations:
-1. Redeemer must hold enough tokens
-2. Issuer must have that token outstanding
-3. Issuer must have enough cash (reserve check)
+Redemption: burn + cash settlement simultaneously. Circle's balance sheet shrinks both sides. Redeemer does a pure asset swap.
 
 ---
 
 ## Two Worlds
 
 ### Trad World 🏦
-- Yellow borders, green assets, red liabilities
-- Cash-based, full T-accounts with equity
-- Tokens show quantity + fiat value: `tokenusd 10 ← circle ($10)`
-- Token liabilities show aggregate supply only: `tokenusd 25 ($25)`
-- Graph shows cash flows only (intrabank and lending excluded)
+- Yellow borders, USD/EUR denominated
+- Full T-accounts with equity
+- Token quantities + fiat values: `tokenusd 10 ← circle ($10)`
+- All entities visible regardless of address
+- Graph: direct cash payments only
 
 ### Crypto World ⛓️
-- Cyan borders, blue assets, yellow liabilities
-- Token-only — no cash concept
-- Only token-holding entities visible (issuers and banks stay in trad)
-- Tokens are bearer assets — no counterparty annotation
-- Per-token net position replaces aggregate equity:
-  ```
-  tokenusd 💵    net +10  ✓
-  tokeneth Ξ     net -3   ⚠ short
-  ```
-- Graph shows fully labelled token flows: `alice ──tokenusd 💵 30──▶ bob`
+- Cyan borders, address shown in title
+- **Only entities with a wallet address are visible**
+- Token-only, no cash, no currency denomination
+- Per-token net positions replace aggregate equity
+- `⚠ short` flag when net is negative
+- Graph: labelled token flows only — `alice ──tokenusd 💵 5──▶ charlie`
 
 ```bash
-python main.py worldswitch    # toggle, shows all sheets immediately
+python main.py worldswitch   # toggle, shows all sheets immediately
 ```
 
 ---
 
-## The Bridge: Trad ↔ Crypto
-
-Tokens enter the crypto world via `issue` in trad world. On `worldswitch`:
-- Issued tokens carry over to crypto sheets automatically
-- Counterparty annotations stripped (bearer assets in crypto)
-- Issuers and banks hidden in crypto world
-
-Crypto token transfers write back to trad balance sheets automatically — both worlds stay in sync.
+## The Bridge: Issue → Worldswitch
 
 ```bash
-# Trad: Circle issues USDC to alice and bob
-python main.py create circle 1000
-python main.py create alice 0
-python main.py create bob 0
+# Trad: Circle issues USDC
+python main.py create circle 1000 --address
+python main.py create alice 0 --address
+python main.py new charlie --currency EUR --address   # EUR wallet
+python main.py fxrate EURUSD 1.08
+
 python main.py issue circle tokenusd 100 --to alice
-python main.py issue circle tokenusd 50 --to bob
+python main.py issue circle tokenusd 50 --to charlie
 
-# Crypto: alice pays bob 30 tokens
+# Trad: charlie sees EUR value
+# tokenusd  50 ← circle (€46)
+
+# Crypto: alice pays charlie
 python main.py worldswitch
-python main.py pay alice bob 30
-# → alice: tokenusd 💵 70   bob: tokenusd 💵 80
+python main.py pay alice charlie 20
+# alice: tokenusd 💵 80   charlie: tokenusd 💵 70
 
-# Back to trad: balances updated automatically
+# Back to trad: write-back applied
 python main.py worldswitch
-# → alice: tokenusd 70 ($70)   bob: tokenusd 80 ($80)
+# alice: tokenusd 80 ($80)   charlie: tokenusd 70 (€65)
 
-# Trad: bob redeems 20 tokens
-python main.py redeem bob tokenusd 20 --to circle
-# → bob: cash $20, tokenusd 60 ($60)
-# → circle: cash $980, tokenusd 130 ($130) outstanding
+# alice redeems (USD ✓)
+python main.py redeem alice tokenusd 10 --to circle
+
+# charlie cannot redeem at circle (EUR ✗)
+python main.py redeem charlie tokenusd 5 --to circle
+# Error: charlie is EUR-denominated but tokenusd settles in USD
 ```
 
 ---
 
-## T-Account Structure
+## Payment Graph
 
-**Trad world:**
-```
-╭──────────────── circle USD ─────────────────╮
-│  ASSETS              LIABILITIES            │
-│  ─────────────────────────────────────────  │
-│  cash  $980          tokenusd  130 ($130)   │  ← total supply, no breakdown
-│                      equity  +$850          │
-│  ──────────────────  ──────────────────     │
-│  TOTAL  $980         TOTAL  $980  ✓         │
-╰─────────────────────────────────────────────╯
-```
+The graph only records genuine settlements:
 
-**Crypto world:**
-```
-╭──────────────── alice ⛓ ────────────────────╮
-│  ASSETS              LIABILITIES            │
-│  ─────────────────────────────────────────  │
-│  tokenusd  💵 70                            │
-│  ──────────────────  ──────────────────     │
-│  tokenusd 💵          net +70  ✓            │
-╰─────────────────────────────────────────────╯
-```
+| Operation | In graph? | Why |
+|-----------|-----------|-----|
+| `issue` | No | Creates credit, not a payment |
+| `deposit` | No | Asset swap (cash ↔ deposit claim) |
+| `withdraw` | No | Asset swap (deposit claim ↔ cash) |
+| `redeem` | No | Burn + asset swap |
+| `borrow` | No | Credit creation |
+| `pay` intrabank | No | Internal ledger entry |
+| `pay` direct cash | **Yes** | Final settlement in base money |
+| `pay` token (crypto) | **Yes** | On-chain token transfer |
 
----
-
-## Payment Graphs
-
-**Trad graph** — cash flows, arrows labelled with instrument and amount:
-```
-alice ────▶ bank          (deposit: cash)
-circle ────▶ bob          (redeem: cash payout)
-```
-
-**Crypto graph** — token flows, fully labelled:
-```
-alice ──tokenusd 💵 30──▶ bob
-```
+The graph being empty in most scenarios is the lesson: most economic activity is balance sheet restructuring, not payment.
 
 ---
 
 ## State & Git Workflow
 
-- `taccounts_state.json` — full ledger state (both worlds), saved after every command
-- `balancesheets.md` — appended each time you run `balancesheets export`
-
 ```bash
 python main.py balancesheets export
 git add taccounts_state.json balancesheets.md
-git commit -m "scenario: <step description>"
+git commit -m "scenario: <step>"
 ```
 
 ---
 
 ## Extending
 
-- Add `repay` — inverse of `borrow` (reduces loan-payable, cash moves back to lender)
-- Add `graph credits` — credit relationship graph separate from cash payments
-- Add FX rates between USD and EUR for cross-currency token valuation
-- Add `scenario` — replay a sequence of steps from a `.txt` file
-- Use `Textual` for an interactive TUI with live-updating T-accounts
-
---- 
-
-## Example
-
-```bash
-
-
-taccounts create bank 100
-taccounts create bob 10
-taccounts new circle --currency USD
-
-
-taccounts deposit bank 10 --from bob
-taccounts deposit bank --from circle
-taccounts pay bob circle 10
-
-
-taccounts issue circle tokenusd 10 --to bob
-taccounts balancesheets show
-
-taccounts create alice 10
-taccounts deposit bank 10 --from alice
-taccounts pay alice circle 5
-taccounts issue circle tokenusd 5 --to alice
-
-taccounts worldswitch
-taccounts pay bob alice 10
-
-taccounts worldswitch
-
-taccounts redeem alice tokenusd 10 --to circle
-
-taccounts balancesheets show
-taccounts balancesheets export
-```
+- Add `repay` — inverse of `borrow`
+- Add `graph credits` — credit relationship graph
+- Add EUR-denominated stablecoin issuer scenario (`tokeneur`)
+- Add FX swap: charlie converts tokenusd → tokeneur via an exchange entity
+- Use `Textual` for an interactive TUI

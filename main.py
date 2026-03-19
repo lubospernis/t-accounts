@@ -46,18 +46,21 @@ def create(
     entity: str = typer.Argument(..., help="Entity name, e.g. 'stablecoin-issuer'"),
     reserves: float = typer.Argument(..., help="Initial cash/reserves"),
     currency: str = typer.Option("USD", "--currency", help="Currency: USD (default) or EUR"),
+    address: bool = typer.Option(False, "--address", help="Assign a crypto wallet address"),
 ):
     """Create an entity with initial reserves. Defaults to USD."""
     if currency.upper() not in ("USD", "EUR"):
         console.print(f"[red]Error:[/red] Currency must be USD or EUR.")
         raise typer.Exit(1)
     try:
-        e = ledger.create(entity, reserves, currency=currency.upper())
-        console.print(f"[green]✓[/green] Created [bold yellow]{entity}[/bold yellow] with [bold]{reserves:,.0f}[/bold] reserves")
+        e = ledger.create(entity, reserves, currency=currency.upper(), with_address=address)
+        addr_note = f" [dim cyan]{e.address}[/dim cyan]" if e.address else ""
+        console.print(f"[green]✓[/green] Created [bold yellow]{entity}[/bold yellow] with [bold]{reserves:,.0f}[/bold] reserves{addr_note}")
         console.print(render_entity(e, ledger=ledger))
     except ValueError as ex:
         console.print(f"[red]Error:[/red] {ex}")
         raise typer.Exit(1)
+
 
 
 # ── NEW ──────────────────────────────────────────────────────────────────────
@@ -66,31 +69,33 @@ def create(
 def new(
     entity: str = typer.Argument(..., help="Entity name, e.g. 'my-bank'"),
     currency: Optional[str] = typer.Option(None, "--currency", help="Currency: USD or EUR"),
+    address: bool = typer.Option(False, "--address", help="Assign a crypto wallet address"),
 ):
     """
     Create a blank balance sheet with no initial entries.
 
-    Optionally set a display currency — amounts will be shown with the
-    corresponding symbol and scale (e.g. $1M, €1.5B). Currency can only
-    be set at creation time via this command.
+    Optionally set a display currency and/or assign a crypto wallet address.
+    Currency defaults to USD. Address enables crypto world visibility.
 
     Examples:
       new my-bank
       new fed --currency USD
-      new ecb --currency EUR
+      new charlie --currency EUR --address
     """
     try:
-        from ledger import Entity
+        from ledger import Entity, generate_address
         if entity in ledger.entities:
             raise ValueError(f"Entity '{entity}' already exists.")
         if currency and currency.upper() not in ("USD", "EUR"):
             raise ValueError(f"Currency must be USD or EUR, got '{currency}'.")
         ent = Entity(name=entity)
         ent.currency = currency.upper() if currency else "USD"
+        ent.address = generate_address() if address else None
         ledger.entities[entity] = ent
         ledger.save()
-        cur_note = f" [dim]({currency.upper()})[/dim]" if currency else ""
-        console.print(f"[green]✓[/green] Created blank balance sheet: [bold yellow]{entity}[/bold yellow]{cur_note}")
+        cur_note = f" [dim]({(currency or 'USD').upper()})[/dim]"
+        addr_note = f" [dim cyan]{ent.address}[/dim cyan]" if ent.address else ""
+        console.print(f"[green]✓[/green] Created blank balance sheet: [bold yellow]{entity}[/bold yellow]{cur_note}{addr_note}")
         console.print(f"[dim]Use: entry {entity} asset|liability <label> <amount>[/dim]")
     except ValueError as ex:
         console.print(f"[red]Error:[/red] {ex}")
@@ -269,6 +274,24 @@ def redeem(
             f"[red]Error:[/red] [bold yellow]{to}[/bold yellow] only has "
             f"[bold]{outstanding:,.0f}[/bold] [cyan]{token}[/cyan] outstanding, "
             f"cannot redeem [bold]{amount:,.0f}[/bold]."
+        )
+        raise typer.Exit(1)
+
+    # Validate redeemer's currency matches the token's peg currency.
+    # Circle (USD) issues tokenusd (USD-pegged). A EUR-denominated entity
+    # cannot redeem at circle because circle only settles in USD.
+    token_peg_currency = None
+    from ledger import STABLECOIN_PEGS
+    if token in STABLECOIN_PEGS:
+        _, token_peg_currency = STABLECOIN_PEGS[token]
+    elif token in ledger.token_prices:
+        _, token_peg_currency = ledger.token_prices[token]
+
+    if token_peg_currency and token_peg_currency != red.currency:
+        console.print(
+            f"[red]Error:[/red] [bold yellow]{redeemer}[/bold yellow] is {red.currency}-denominated "
+            f"but [cyan]{token}[/cyan] settles in {token_peg_currency}. "
+            f"Currency mismatch — {redeemer} cannot redeem at [bold yellow]{to}[/bold yellow]."
         )
         raise typer.Exit(1)
 
@@ -685,6 +708,35 @@ def price(
     console.print(
         f"[green]✓[/green] [cyan]{token}[/cyan] = [bold]{sym}{amount:,.0f}[/bold] per token"
     )
+
+
+# ── FXRATE ───────────────────────────────────────────────────────────────────
+
+@app.command()
+def fxrate(
+    pair: str = typer.Argument(..., help="Currency pair e.g. EURUSD"),
+    rate: float = typer.Argument(..., help="Rate: 1 unit of base = rate units of quote"),
+):
+    """
+    Set an FX rate for cross-currency token valuation.
+
+    Used when an entity holds tokens denominated in a different currency.
+    For example, a EUR entity holding tokenusd needs EURUSD to show the
+    euro value of their USD-pegged tokens.
+
+    Convention: EURUSD 1.08 means 1 EUR = 1.08 USD.
+
+    Examples:
+      fxrate EURUSD 1.08
+      fxrate USDEUR 0.926
+    """
+    pair = pair.upper()
+    if len(pair) != 6 or not pair.isalpha():
+        console.print("[red]Error:[/red] Pair must be 6 letters, e.g. EURUSD.")
+        raise typer.Exit(1)
+    ledger.set_fx_rate(pair, rate)
+    base, quote = pair[:3], pair[3:]
+    console.print(f"[green]✓[/green] 1 [bold]{base}[/bold] = [bold]{rate}[/bold] {quote}")
 
 
 # ── WORLDSWITCH ───────────────────────────────────────────────────────────────

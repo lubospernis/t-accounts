@@ -2,35 +2,30 @@
   "world": "trad",
   "token_prices": {},
   "entities": {
+    "bob": {
+      "name": "bob",
+      "assets_trad": [],
+      "liabilities_trad": [],
+      "assets_crypto": [],
+      "liabilities_crypto": [],
+      "currency": "USD"
+    },
     "bank": {
       "name": "bank",
       "assets_trad": [
         {
           "label": "cash",
-          "amount": 120.0,
+          "amount": 15.0,
           "counterparty": null
         }
       ],
       "liabilities_trad": [
         {
           "label": "deposit-circle",
-          "amount": 5.0,
-          "counterparty": "circle"
-        },
-        {
-          "label": "deposit-alice",
           "amount": 15.0,
-          "counterparty": "alice"
+          "counterparty": "circle"
         }
       ],
-      "assets_crypto": [],
-      "liabilities_crypto": [],
-      "currency": "USD"
-    },
-    "bob": {
-      "name": "bob",
-      "assets_trad": [],
-      "liabilities_trad": [],
       "assets_crypto": [],
       "liabilities_crypto": [],
       "currency": "USD"
@@ -40,14 +35,14 @@
       "assets_trad": [
         {
           "label": "deposit@bank",
-          "amount": 5.0,
+          "amount": 15.0,
           "counterparty": "bank"
         }
       ],
       "liabilities_trad": [
         {
           "label": "tokenusd",
-          "amount": 5.0,
+          "amount": 15.0,
           "counterparty": null
         }
       ],
@@ -65,13 +60,8 @@
       "name": "alice",
       "assets_trad": [
         {
-          "label": "deposit@bank",
-          "amount": 15.0,
-          "counterparty": "bank"
-        },
-        {
           "label": "tokenusd",
-          "amount": 5.0,
+          "amount": 15.0,
           "counterparty": "circle"
         }
       ],
@@ -85,38 +75,17 @@
       ],
       "liabilities_crypto": [],
       "currency": "USD"
+    },
+    "charlie": {
+      "name": "charlie",
+      "assets_trad": [],
+      "liabilities_trad": [],
+      "assets_crypto": [],
+      "liabilities_crypto": [],
+      "currency": "USD"
     }
   },
-  "transactions_trad": [
-    {
-      "sender": "bob",
-      "receiver": "bank",
-      "instrument": "cash",
-      "amount": 10.0,
-      "type": "deposit"
-    },
-    {
-      "sender": "circle",
-      "receiver": "bob",
-      "instrument": "tokenusd",
-      "amount": 10.0,
-      "type": "issue"
-    },
-    {
-      "sender": "alice",
-      "receiver": "bank",
-      "instrument": "cash",
-      "amount": 10.0,
-      "type": "deposit"
-    },
-    {
-      "sender": "circle",
-      "receiver": "alice",
-      "instrument": "tokenusd",
-      "amount": 5.0,
-      "type": "issue"
-    }
-  ],
+  "transactions_trad": [],
   "transactions_crypto": [
     {
       "sender": "bob",

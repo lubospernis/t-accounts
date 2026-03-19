@@ -160,7 +160,12 @@ def render_entity(entity: Entity, ledger=None) -> Panel:
 
     # Hide currency denomination in crypto world — it's irrelevant there
     cur_label = f" [dim]{entity.currency}[/dim]" if (entity.currency and entity._world == "trad") else ""
-    world_tag = " [dim cyan]⛓[/dim cyan]" if entity._world == "crypto" else ""
+    if entity._world == "crypto" and entity.address:
+        world_tag = f" [dim cyan]⛓ {entity.address}[/dim cyan]"
+    elif entity._world == "crypto":
+        world_tag = " [dim cyan]⛓[/dim cyan]"
+    else:
+        world_tag = ""
     title = f"[{s['title']}]{entity.name}[/{s['title']}]{cur_label}{world_tag}"
     return Panel(table, title=title, border_style=s["border"])
 
@@ -173,16 +178,21 @@ def _has_tokens(entity) -> bool:
     )
 
 
+def _visible_in_crypto(entity) -> bool:
+    """An entity is visible in crypto world if it has a wallet address."""
+    return entity.has_address
+
+
 def render_all(ledger: Ledger):
     if not ledger.entities:
         console.print("[dim]No entities yet.[/dim]")
         return
     console.print(world_banner(ledger.world))
     if ledger.world == "crypto":
-        # Only show entities that hold token assets — issuers/banks are invisible
-        visible = [e for e in ledger.entities.values() if _has_tokens(e)]
+        # Only show entities with a wallet address
+        visible = [e for e in ledger.entities.values() if _visible_in_crypto(e)]
         if not visible:
-            console.print("[dim cyan]No token holders yet. Issue tokens in trad world first, then worldswitch.[/dim cyan]")
+            console.print("[dim cyan]No entities with a crypto address yet. Use --address when creating entities.[/dim cyan]")
             return
     else:
         visible = list(ledger.entities.values())
@@ -210,7 +220,7 @@ def render_graph(ledger: Ledger):
     if ledger.world == "crypto":
         # Crypto: labelled P2P token arrows, only token holders as nodes
         token_holders = {
-            name for name, e in ledger.entities.items() if _has_tokens(e)
+            name for name, e in ledger.entities.items() if _visible_in_crypto(e)
         }
         for sender, targets in graph.items():
             for receiver, flows in targets.items():

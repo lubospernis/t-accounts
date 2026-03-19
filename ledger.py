@@ -14,6 +14,7 @@ Token prices:
   - Crypto write-back: transfer_token also updates assets_trad so both worlds stay in sync
 """
 import json
+import uuid
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
@@ -70,6 +71,11 @@ def fmt_amount(amount: float, currency: Optional[str] = None, signed: bool = Fal
     return text
 
 
+def generate_address() -> str:
+    """Generate a short random wallet address."""
+    return "0x" + str(uuid.uuid4()).replace("-", "")[:8]
+
+
 @dataclass
 class Entity:
     name: str
@@ -78,8 +84,13 @@ class Entity:
     assets_crypto: list = field(default_factory=list)
     liabilities_crypto: list = field(default_factory=list)
     currency: str = DEFAULT_CURRENCY  # always set, defaults to USD
+    address: Optional[str] = None     # crypto address; None = no crypto presence
 
     _world: str = field(default="trad", repr=False)
+
+    @property
+    def has_address(self) -> bool:
+        return self.address is not None
 
     FUNGIBLE_TRAD = {"cash"}
 
@@ -195,6 +206,8 @@ class Ledger:
         # token_prices: {token_label: (price_per_token, currency)}
         # Stablecoin pegs are always applied; this dict holds manual overrides
         self.token_prices: dict[str, tuple[float, str]] = {}
+        # fx_rates: {"EURUSD": 1.08} means 1 EUR = 1.08 USD
+        self.fx_rates: dict[str, float] = {}
         self.load()
 
     @property
@@ -209,29 +222,44 @@ class Ledger:
     def token_fiat_value(self, token: str, quantity: float, entity_currency: str) -> Optional[float]:
         """
         Return the fiat value of `quantity` tokens in the entity's currency.
-        Returns None if no price is known.
+        Uses FX rates for cross-currency conversion (e.g. EUR entity holding tokenusd).
         Priority: manual token_prices > stablecoin pegs.
+        Returns None if no price or FX rate is known.
         """
+        def convert(value_usd_equiv: float, from_ccy: str, to_ccy: str) -> Optional[float]:
+            """Convert fiat value between currencies using stored FX rates."""
+            if from_ccy == to_ccy:
+                return value_usd_equiv
+            pair = from_ccy + to_ccy   # e.g. USDEUR
+            pair_inv = to_ccy + from_ccy  # e.g. EURUSD
+            if pair in self.fx_rates:
+                return value_usd_equiv * self.fx_rates[pair]
+            if pair_inv in self.fx_rates:
+                return value_usd_equiv / self.fx_rates[pair_inv]
+            return None
+
         # Manual price override
         if token in self.token_prices:
             price, price_currency = self.token_prices[token]
-            if price_currency == entity_currency:
-                return quantity * price
-            # Cross-currency: for now return None (no FX rates)
-            return None
+            value_in_price_ccy = quantity * price
+            return convert(value_in_price_ccy, price_currency, entity_currency)
 
         # Stablecoin peg
         if token in STABLECOIN_PEGS:
             peg_price, peg_currency = STABLECOIN_PEGS[token]
-            if peg_currency == entity_currency:
-                return quantity * peg_price
-            return None
+            value_in_peg_ccy = quantity * peg_price
+            return convert(value_in_peg_ccy, peg_currency, entity_currency)
 
         return None
 
     def set_token_price(self, token: str, price: float, currency: str):
         """Set or update the fiat price of a token."""
         self.token_prices[token] = (price, currency)
+        self.save()
+
+    def set_fx_rate(self, pair: str, rate: float):
+        """Set an FX rate. pair e.g. 'EURUSD' means 1 EUR = rate USD."""
+        self.fx_rates[pair.upper()] = rate
         self.save()
 
     def save(self):
@@ -246,11 +274,13 @@ class Ledger:
                     "assets_crypto": e.assets_crypto,
                     "liabilities_crypto": [l for l in e.liabilities_crypto if l["label"] != "equity"],
                     "currency": e.currency,
+                    "address": e.address,
                 }
                 for name, e in self.entities.items()
             },
             "transactions_trad": self.transactions_trad,
             "transactions_crypto": self.transactions_crypto,
+            "fx_rates": self.fx_rates,
         }
         STATE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -268,17 +298,21 @@ class Ledger:
             ent.assets_crypto = ed.get("assets_crypto", [])
             ent.liabilities_crypto = [l for l in ed.get("liabilities_crypto", []) if l["label"] != "equity"]
             ent.currency = ed.get("currency", DEFAULT_CURRENCY)
+            ent.address = ed.get("address")
             ent._world = self.world
             self.entities[name] = ent
         self.transactions_trad = data.get("transactions_trad", data.get("transactions", []))
         self.transactions_crypto = data.get("transactions_crypto", [])
+        self.fx_rates = data.get("fx_rates", {})
 
-    def create(self, name: str, reserves: float, currency: str = DEFAULT_CURRENCY):
+    def create(self, name: str, reserves: float, currency: str = DEFAULT_CURRENCY,
+               with_address: bool = False):
         if name in self.entities:
             raise ValueError(f"Entity '{name}' already exists.")
         if self.world == "crypto":
             raise ValueError("Use 'new' to create entities in crypto world. 'create' is trad-only.")
         e = Entity(name=name, currency=currency)
+        e.address = generate_address() if with_address else None
         e._world = self.world
         if reserves > 0:
             e.assets_trad.append({"label": "cash", "amount": reserves, "counterparty": None})
@@ -322,11 +356,14 @@ class Ledger:
     def _writeback_token_to_trad(self, entity_name: str, token: str, delta: float):
         """
         After a crypto token transfer, update the corresponding trad asset entry.
+        Skipped for entities with no address (not crypto-visible) or crypto-native entities
+        that have no meaningful trad balance sheet.
         delta > 0 = received tokens, delta < 0 = sent tokens.
-        Creates the entry if it doesn't exist yet (receiver getting tokens for the first time).
-        Removes the entry if it reaches zero.
         """
         entity = self.get(entity_name)
+        # Only write back if entity exists in trad world (has a currency denomination)
+        if not entity.has_address:
+            return
         entry = next((e for e in entity.assets_trad if e["label"] == token), None)
 
         if delta > 0:
