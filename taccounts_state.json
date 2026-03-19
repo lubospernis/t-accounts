@@ -2,14 +2,6 @@
   "world": "trad",
   "token_prices": {},
   "entities": {
-    "bob": {
-      "name": "bob",
-      "assets_trad": [],
-      "liabilities_trad": [],
-      "assets_crypto": [],
-      "liabilities_crypto": [],
-      "currency": "USD"
-    },
     "bank": {
       "name": "bank",
       "assets_trad": [
@@ -28,7 +20,17 @@
       ],
       "assets_crypto": [],
       "liabilities_crypto": [],
-      "currency": "USD"
+      "currency": "USD",
+      "address": null
+    },
+    "bob": {
+      "name": "bob",
+      "assets_trad": [],
+      "liabilities_trad": [],
+      "assets_crypto": [],
+      "liabilities_crypto": [],
+      "currency": "USD",
+      "address": "0x74f75304"
     },
     "circle": {
       "name": "circle",
@@ -54,14 +56,15 @@
           "counterparty": null
         }
       ],
-      "currency": "USD"
+      "currency": "USD",
+      "address": null
     },
     "alice": {
       "name": "alice",
       "assets_trad": [
         {
           "label": "tokenusd",
-          "amount": 15.0,
+          "amount": 10.0,
           "counterparty": "circle"
         }
       ],
@@ -69,20 +72,34 @@
       "assets_crypto": [
         {
           "label": "tokenusd",
-          "amount": 15.0,
+          "amount": 10.0,
           "counterparty": null
         }
       ],
       "liabilities_crypto": [],
-      "currency": "USD"
+      "currency": "USD",
+      "address": "0x71c85bb2"
     },
     "charlie": {
       "name": "charlie",
-      "assets_trad": [],
+      "assets_trad": [
+        {
+          "label": "tokenusd",
+          "amount": 5.0,
+          "counterparty": null
+        }
+      ],
       "liabilities_trad": [],
-      "assets_crypto": [],
+      "assets_crypto": [
+        {
+          "label": "tokenusd",
+          "amount": 5.0,
+          "counterparty": null
+        }
+      ],
       "liabilities_crypto": [],
-      "currency": "USD"
+      "currency": "EUR",
+      "address": "0xcd7fca11"
     }
   },
   "transactions_trad": [],
@@ -93,6 +110,16 @@
       "instrument": "tokenusd",
       "amount": 10.0,
       "type": "payment"
+    },
+    {
+      "sender": "alice",
+      "receiver": "charlie",
+      "instrument": "tokenusd",
+      "amount": 5.0,
+      "type": "payment"
     }
-  ]
+  ],
+  "fx_rates": {
+    "EURUSD": 1.15
+  }
 }

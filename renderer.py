@@ -104,7 +104,8 @@ def render_entity(entity: Entity, ledger=None) -> Panel:
                 fv = ledger.token_fiat_value(a["label"], a["amount"], entity.currency)
                 if fv is not None:
                     sym = "$" if entity.currency == "USD" else "€"
-                    a_cell += f" [dim green]({sym}{fv:,.0f})[/dim green]"
+                    fv_str = f"{fv:,.0f}" if fv == int(fv) else f"{fv:,.2f}".rstrip("0").rstrip(".")
+                    a_cell += f" [dim green]({sym}{fv_str})[/dim green]"
         if i < len(liabs):
             l = liabs[i]
             l_cell = f"{l['label']}  [bold]{_fmt_entry(entity, l)}[/bold]"
@@ -114,7 +115,8 @@ def render_entity(entity: Entity, ledger=None) -> Panel:
                 fv = ledger.token_fiat_value(l["label"], l["amount"], entity.currency)
                 if fv is not None:
                     sym = "$" if entity.currency == "USD" else "€"
-                    l_cell += f" [dim red]({sym}{fv:,.0f})[/dim red]"
+                    fv_str = f"{fv:,.0f}" if fv == int(fv) else f"{fv:,.2f}".rstrip("0").rstrip(".")
+                    l_cell += f" [dim red]({sym}{fv_str})[/dim red]"
         table.add_row(a_cell, l_cell)
 
     table.add_row("─" * 20, "─" * 20)
@@ -145,17 +147,42 @@ def render_entity(entity: Entity, ledger=None) -> Panel:
         else:
             table.add_row("[dim]empty[/dim]", "")
     else:
-        # Trad world: equity row + totals
-        eq = entity.equity()
-        eq_fmt = f(eq, signed=True)
+        # Trad world: equity and totals, FX-adjusted if ledger is available.
+        # For entities holding foreign-currency tokens, use the converted fiat
+        # value rather than the raw quantity so equity and totals are meaningful.
+        if ledger:
+            def _fiat_sum(entries: list) -> float:
+                total = 0.0
+                for e in entries:
+                    label = e["label"]
+                    amount = e["amount"]
+                    fv = ledger.token_fiat_value(label, amount, entity.currency)
+                    if fv is not None:
+                        total += fv  # use converted value
+                    else:
+                        total += amount  # cash, deposits — already in entity currency
+                return total
+
+            fiat_assets = _fiat_sum(entity.assets_trad)
+            fiat_liabs  = _fiat_sum(entity.liabilities_trad)
+            fiat_equity = fiat_assets - fiat_liabs
+            eq_fmt = f(fiat_equity, signed=True)
+            total_a = fiat_assets
+            total_l = fiat_assets  # always balanced by construction
+        else:
+            eq = entity.equity()
+            eq_fmt = f(eq, signed=True)
+            total_a = entity.total_assets()
+            total_l = entity.total_liabilities_and_equity()
+
         table.add_row(
             "",
             f"[bold {s['equity_col']}]equity  {eq_fmt}[/bold {s['equity_col']}]  "
             f"[dim {s['equity_col']}](= A − L)[/dim {s['equity_col']}]"
         )
         table.add_row(
-            f"[bold]TOTAL  {f(entity.total_assets())}[/bold]",
-            f"[bold]TOTAL  {f(entity.total_liabilities_and_equity())}[/bold]  [green]✓[/green]",
+            f"[bold]TOTAL  {f(total_a)}[/bold]",
+            f"[bold]TOTAL  {f(total_l)}[/bold]  [green]✓[/green]",
         )
 
     # Hide currency denomination in crypto world — it's irrelevant there

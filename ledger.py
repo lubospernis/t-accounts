@@ -62,7 +62,11 @@ def fmt_amount(amount: float, currency: Optional[str] = None, signed: bool = Fal
         scaled = f"{abs_amount / 1_000_000:.2f}".rstrip("0").rstrip(".")
         text = f"{symbol}{scaled}M"
     else:
-        text = f"{symbol}{abs_amount:,.0f}"
+        if abs_amount != int(abs_amount):
+            # Show up to 2 decimal places, strip trailing zeros
+            text = f"{symbol}{abs_amount:,.2f}".rstrip("0").rstrip(".")
+        else:
+            text = f"{symbol}{abs_amount:,.0f}"
 
     if neg:
         return "-" + text
